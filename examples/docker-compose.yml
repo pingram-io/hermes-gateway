@@ -1,0 +1,27 @@
+# Example: expose the Pingram webhook server to the internet with ngrok so
+# Pingram can deliver inbound SMS/Email to your locally-running Hermes gateway.
+#
+#   1. Configure your Hermes gateway with the Pingram plugin (see ../README.md)
+#      and start it so it's listening on PINGRAM_WEBHOOK_PORT (default 8650).
+#   2. cp ngrok.env.example ngrok.env  and fill in NGROK_AUTHTOKEN.
+#   3. docker compose -f docker-compose.yml --env-file ngrok.env up
+#   4. Copy the https URL ngrok prints and set it (plus the webhook path) as the
+#      webhook in your Pingram dashboard:  https://<id>.ngrok-free.app/webhooks/pingram
+#
+# `host.docker.internal` lets the ngrok container reach the gateway running on
+# your host machine.
+
+services:
+  ngrok:
+    image: ngrok/ngrok:latest
+    restart: unless-stopped
+    command:
+      - "http"
+      - "host.docker.internal:${PINGRAM_WEBHOOK_PORT:-8650}"
+    environment:
+      NGROK_AUTHTOKEN: ${NGROK_AUTHTOKEN}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      # ngrok's local inspection UI: http://localhost:4040
+      - "4040:4040"

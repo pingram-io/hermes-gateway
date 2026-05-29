@@ -1,0 +1,67 @@
+name: pingram
+label: Pingram
+kind: platform
+version: 1.0.0
+description: >
+  Pingram gateway adapter for Hermes Agent. Lets users chat with their Hermes
+  agent over Pingram-managed SMS and Email (including inbound MMS and email
+  attachments). Runs a single aiohttp webhook server and sends replies through
+  the Pingram Python SDK. One combined `pingram` platform serves both channels;
+  the channel is encoded in the Hermes chat_id prefix (`sms:` / `email:`).
+author: Pingram
+# ``requires_env`` entries are surfaced in ``hermes config`` UI via the
+# platform-plugin env var injector in ``hermes_cli/config.py``.
+requires_env:
+  - name: PINGRAM_API_KEY
+    description: "Pingram API key (pingram_sk_...)"
+    prompt: "Pingram API key"
+    password: true
+optional_env:
+  - name: PINGRAM_REGION
+    description: "Pingram region: us | eu | ca (default: us)"
+    prompt: "Region (us/eu/ca)"
+    password: false
+  - name: PINGRAM_FROM_SMS
+    description: "Sender phone number for SMS (E.164, e.g. +15551234567). Enables the SMS channel."
+    prompt: "SMS sender number"
+    password: false
+  - name: PINGRAM_FROM_EMAIL
+    description: "Sender email address for Email. Enables the Email channel."
+    prompt: "Email sender address"
+    password: false
+  - name: PINGRAM_CHANNELS
+    description: "Comma-separated channel filter (sms,email). Default: inferred from configured senders."
+    prompt: "Channels (sms,email)"
+    password: false
+  - name: PINGRAM_WEBHOOK_HOST
+    description: "Host/interface the webhook server binds to (default: 0.0.0.0)"
+    prompt: "Webhook host"
+    password: false
+  - name: PINGRAM_WEBHOOK_PORT
+    description: "Port the webhook server listens on (default: 8650)"
+    prompt: "Webhook port"
+    password: false
+  - name: PINGRAM_WEBHOOK_SECRET
+    description: "Webhook signing secret (pingram_whsecret_...). When set, signatures are verified (secured mode); when empty, the webhook is unauthenticated (unsecured mode)."
+    prompt: "Webhook secret (optional)"
+    password: true
+  - name: PINGRAM_WEBHOOK_TOLERANCE
+    description: "Signature timestamp tolerance in seconds (default: 300)"
+    prompt: "Signature tolerance (seconds)"
+    password: false
+  - name: PINGRAM_ALLOWED_USERS
+    description: "Comma-separated phone numbers / email addresses allowed to talk to the agent"
+    prompt: "Allowed users (comma-separated)"
+    password: false
+  - name: PINGRAM_ALLOW_ALL_USERS
+    description: "Allow anyone to talk to the agent (dev only; default: false)"
+    prompt: "Allow all users? (true/false)"
+    password: false
+  - name: PINGRAM_NOTIFICATION_TYPE
+    description: "Pingram notification `type` used when sending replies (default: hermes_agent_reply)"
+    prompt: "Notification type"
+    password: false
+  - name: PINGRAM_WEBHOOK_PATH
+    description: "Webhook path the server exposes (default: /webhooks/pingram)"
+    prompt: "Webhook path"
+    password: false

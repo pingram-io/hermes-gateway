@@ -1,0 +1,9 @@
+__pycache__/
+*.py[cod]
+.env
+*.env
+!*.env.example
+
+# Internal planning notes (kept locally, not published)
+PLAN.md
+CONVERSATION.md
