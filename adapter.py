@@ -958,16 +958,21 @@ def check_requirements() -> bool:
     """True when the Pingram SDK + aiohttp are importable and a key is set.
 
     The gateway uses this as the activation gate: ``create_adapter`` skips the
-    platform (never calling ``connect()``) when this returns False. So this is
-    also where the SDK is auto-installed — but only once an API key is present,
-    so we never install for users who haven't configured Pingram. The install is
-    venv-scoped and honours ``security.allow_lazy_installs``.
+    platform (never calling ``connect()``) when this returns False, so this is
+    also where the SDK is auto-installed on first run.
+
+    Installing deps is gated only on the user having *enabled* the plugin —
+    which is implicit here, since Hermes only loads/registers (and thus only
+    calls ``check_requirements``) for enabled plugins. Enabling Pingram is a
+    clear opt-in, so we fetch its deps regardless of whether a key is set yet.
+    We still require ``PINGRAM_API_KEY`` for the *activation* result so the
+    gateway doesn't spin up a keyless adapter that just errors in ``connect()``.
+    The install is venv-scoped and honours ``security.allow_lazy_installs``.
     """
-    if not os.getenv("PINGRAM_API_KEY"):
-        return False
-    return _ensure_importable(_AIOHTTP_IMPORT, _AIOHTTP_PACKAGE) and _ensure_importable(
+    deps_ok = _ensure_importable(_AIOHTTP_IMPORT, _AIOHTTP_PACKAGE) and _ensure_importable(
         _PINGRAM_IMPORT, _PINGRAM_PACKAGE
     )
+    return bool(os.getenv("PINGRAM_API_KEY")) and deps_ok
 
 
 def validate_config(config) -> bool:
