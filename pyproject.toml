@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+# Distribution name on PyPI. Distinct from the Pingram SDK (`pingram-python`).
+name = "hermes-pingram-gateway"
+# Keep in sync with plugin.yaml's `version`.
+version = "1.0.0"
+description = "Hermes Agent platform plugin: chat with your agent over Pingram SMS and Email."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Pingram" }]
+keywords = ["hermes", "hermes-agent", "pingram", "sms", "email", "gateway", "plugin", "chatbot"]
+classifiers = [
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Topic :: Communications :: Chat",
+  "Topic :: Communications :: Email",
+  "Intended Audience :: Developers",
+]
+dependencies = [
+  # Pingram Python SDK — distribution is `pingram-python`, imported as `pingram`.
+  "pingram-python>=1.0.7",
+  "aiohttp>=3.9",
+]
+
+[project.urls]
+Homepage = "https://github.com/pingram-io/hermes-gateway"
+Repository = "https://github.com/pingram-io/hermes-gateway"
+
+# Hermes discovers entry-point plugins in the `hermes_agent.plugins` group and
+# calls `register(ctx)` on the referenced module. The key (`pingram`) is the
+# plugin name used in `plugins.enabled`.
+[project.entry-points."hermes_agent.plugins"]
+pingram = "pingram_gateway"
+
+# Map the flat repo (adapter.py + __init__.py at the root) to an importable
+# `pingram_gateway` package without moving files, so the same tree works for
+# both `pip install` (entry-point discovery) and `hermes plugins install`
+# (directory discovery via plugin.yaml + __init__.py).
+[tool.setuptools]
+packages = ["pingram_gateway"]
+
+[tool.setuptools.package-dir]
+pingram_gateway = "."

@@ -3,38 +3,44 @@ Pingram Platform Adapter for Hermes Agent.
 
 A single Hermes *platform plugin* that lets users chat with their Hermes agent
 over Pingram-managed **SMS** and **Email**.  One combined ``pingram`` platform
-serves both channels (Pingram uses one API key and one webhook URL for both);
-the channel is encoded in the Hermes ``chat_id`` prefix (``sms:`` / ``email:``).
+serves both channels (Pingram uses one API key for both); the channel is encoded
+in the Hermes ``chat_id`` prefix (``sms:`` / ``email:``).
+
+Inbound messages are received by **polling** Pingram's logs API on a timer — no
+public endpoint or webhook registration is required.
 
 Flow::
 
-    Human --SMS/Email--> Pingram --POST webhook--> aiohttp server (this adapter)
-                                                       |
-                                              MessageEvent -> Hermes agent
-                                                       |
+    Human --SMS/Email--> Pingram
+                            |  (poll logs.getLogs every N seconds)
+                            v
+                  PingramAdapter -> MessageEvent -> Hermes agent
+                            |
     Human <--SMS/Email-- Pingram <-- Pingram SDK <-- PingramAdapter.send()
 
 Configuration (env vars override config.yaml ``extra``):
     PINGRAM_API_KEY            (required) pingram_sk_...
     PINGRAM_REGION             us | eu | ca (default: us)
-    PINGRAM_FROM_SMS           sender phone (E.164); enables the SMS channel
-    PINGRAM_FROM_EMAIL         sender email; enables the Email channel
-    PINGRAM_CHANNELS           csv filter (sms,email); default: inferred
-    PINGRAM_WEBHOOK_HOST       default 0.0.0.0
-    PINGRAM_WEBHOOK_PORT       default 8650
-    PINGRAM_WEBHOOK_PATH       default /webhooks/pingram
-    PINGRAM_WEBHOOK_SECRET     pingram_whsecret_... (optional -> secured mode)
-    PINGRAM_WEBHOOK_TOLERANCE  signature timestamp tolerance, seconds (default 300)
+    PINGRAM_CHANNELS           csv of channels to enable (sms,email); this turns
+                               channels on. Default: inferred from any sender.
+    PINGRAM_POLL_INTERVAL      seconds between polls (default 15)
+    PINGRAM_POLL_LIMIT         max messages fetched per poll page (default 50)
+    PINGRAM_FROM_SMS           optional SMS sender number (E.164); blank -> Pingram
+                               account default number
+    PINGRAM_FROM_EMAIL         optional email sender address; blank -> Pingram default
+    PINGRAM_FROM_NAME          optional email sender display name; blank -> default
     PINGRAM_ALLOWED_USERS      csv of phones/emails allowed to talk to the agent
     PINGRAM_ALLOW_ALL_USERS    true to allow everyone (dev only; default false)
     PINGRAM_NOTIFICATION_TYPE  Pingram notification `type` for replies
                                (default: hermes_agent_reply)
+
+Note: inbound email *attachments* are not downloaded in polling mode (Pingram's
+logs API returns attachment metadata only). Inbound SMS/MMS images work fully.
 """
 
 import asyncio
 import base64
 import datetime
-import hashlib
 import html as html_lib
 import logging
 import os
@@ -54,12 +60,19 @@ from gateway.config import Platform
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_PORT = 8650
-DEFAULT_WEBHOOK_PATH = "/webhooks/pingram"
 DEFAULT_NOTIFICATION_TYPE = "hermes_agent_reply"
-DEFAULT_TOLERANCE = 300
 _DEDUP_TTL_SECONDS = 3600
 _DOWNLOAD_TIMEOUT = 30
+
+# Inbound polling.
+DEFAULT_POLL_INTERVAL = 15
+MIN_POLL_INTERVAL = 3
+DEFAULT_POLL_LIMIT = 50
+# Bound on how many log pages a single poll cycle will walk back through.
+_MAX_POLL_PAGES = 10
+# logs.getLogs event_type values for inbound messages.
+_LOG_EVENT_SMS_INBOUND = "sms_inbound"
+_LOG_EVENT_EMAIL_INBOUND = "inbound"
 
 
 # ---------------------------------------------------------------------------
@@ -155,35 +168,38 @@ class PingramAdapter(BasePlatformAdapter):
         self.api_key: str = str(cfg("PINGRAM_API_KEY", "api_key", "")).strip()
         self.region: str = str(cfg("PINGRAM_REGION", "region", "us")).strip().lower() or "us"
 
+        # Sender identity is OPTIONAL on every channel — when left blank, Pingram
+        # fills in the account default (a Pingram-managed number / sender). We
+        # only send these fields when the user explicitly set them.
         self.from_sms: str = str(cfg("PINGRAM_FROM_SMS", "from_sms", "")).strip()
         self.from_email: str = _norm_email(cfg("PINGRAM_FROM_EMAIL", "from_email", ""))
-        self._from_sms_norm = _norm_phone(self.from_sms)
+        self.from_name: str = str(cfg("PINGRAM_FROM_NAME", "from_name", "")).strip()
 
-        # Which channels are active = (requested filter) ∩ (have a sender for it)
-        available: set = set()
-        if self.from_sms:
-            available.add("sms")
-        if self.from_email:
-            available.add("email")
-        requested = set(_parse_csv(cfg("PINGRAM_CHANNELS", "channels", "")))
-        self.channels: set = (requested & available) if requested else available
+        # Channels are an explicit choice (PINGRAM_CHANNELS), independent of
+        # whether a sender is configured. Fall back to inferring from configured
+        # senders for legacy setups that predate the channel selector.
+        requested = set(_parse_csv(cfg("PINGRAM_CHANNELS", "channels", ""))) & {"sms", "email"}
+        if requested:
+            self.channels: set = requested
+        else:
+            inferred: set = set()
+            if self.from_sms:
+                inferred.add("sms")
+            if self.from_email:
+                inferred.add("email")
+            self.channels = inferred
 
-        self.webhook_host: str = str(cfg("PINGRAM_WEBHOOK_HOST", "webhook_host", "0.0.0.0")).strip()
+        # Inbound polling cadence.
         try:
-            self.webhook_port: int = int(cfg("PINGRAM_WEBHOOK_PORT", "webhook_port", DEFAULT_PORT))
+            self.poll_interval: int = int(cfg("PINGRAM_POLL_INTERVAL", "poll_interval", DEFAULT_POLL_INTERVAL))
         except (TypeError, ValueError):
-            self.webhook_port = DEFAULT_PORT
-
-        path = str(cfg("PINGRAM_WEBHOOK_PATH", "webhook_path", DEFAULT_WEBHOOK_PATH)).strip() or DEFAULT_WEBHOOK_PATH
-        if not path.startswith("/"):
-            path = "/" + path
-        self.webhook_path: str = path.rstrip("/") or DEFAULT_WEBHOOK_PATH
-
-        self.webhook_secret: str = str(cfg("PINGRAM_WEBHOOK_SECRET", "webhook_secret", "")).strip()
+            self.poll_interval = DEFAULT_POLL_INTERVAL
+        self.poll_interval = max(MIN_POLL_INTERVAL, self.poll_interval)
         try:
-            self.webhook_tolerance: int = int(cfg("PINGRAM_WEBHOOK_TOLERANCE", "webhook_tolerance", DEFAULT_TOLERANCE))
+            self.poll_limit: int = int(cfg("PINGRAM_POLL_LIMIT", "poll_limit", DEFAULT_POLL_LIMIT))
         except (TypeError, ValueError):
-            self.webhook_tolerance = DEFAULT_TOLERANCE
+            self.poll_limit = DEFAULT_POLL_LIMIT
+        self.poll_limit = max(1, self.poll_limit)
 
         self.notification_type: str = str(
             cfg("PINGRAM_NOTIFICATION_TYPE", "notification_type", DEFAULT_NOTIFICATION_TYPE)
@@ -195,12 +211,13 @@ class PingramAdapter(BasePlatformAdapter):
         self._allowed_emails: set = {_norm_email(a) for a in allowed if "@" in a}
 
         # Runtime state
-        self._runner = None
-        self._site = None
         self._reply_ctx: Dict[str, Dict[str, Any]] = {}
         self._seen: Dict[str, float] = {}
         self._tasks: set = set()
-        self._warned_unsecured = False
+        self._poll_task = None
+        # Only messages newer than this watermark are processed; set at startup
+        # so we don't replay history on the first poll.
+        self._poll_watermark_ms = 0
 
     @property
     def name(self) -> str:
@@ -215,179 +232,55 @@ class PingramAdapter(BasePlatformAdapter):
             return False
 
         if not self.channels:
-            logger.error("Pingram: configure PINGRAM_FROM_SMS and/or PINGRAM_FROM_EMAIL")
+            logger.error("Pingram: enable at least one channel via PINGRAM_CHANNELS (sms and/or email)")
             self._set_fatal_error(
                 "config_missing",
-                "At least one of PINGRAM_FROM_SMS / PINGRAM_FROM_EMAIL must be set",
+                "PINGRAM_CHANNELS must enable sms and/or email",
                 retryable=False,
             )
             return False
 
+        # aiohttp is used to download inbound MMS media.
         try:
-            from aiohttp import web
+            import aiohttp  # noqa: F401
         except ImportError:
             logger.error("Pingram: aiohttp is required (pip install aiohttp)")
             self._set_fatal_error("dependency_missing", "aiohttp not installed", retryable=False)
             return False
 
-        # Fail fast if the Pingram SDK is missing — sending replies needs it.
+        # Fail fast if the Pingram SDK is missing — it's used to poll for inbound
+        # messages and to send replies.
         try:
             import pingram  # noqa: F401
         except ImportError:
-            logger.error("Pingram: the 'pingram' package is required (pip install pingram)")
+            logger.error("Pingram: the Pingram SDK is required (pip install pingram-python)")
             self._set_fatal_error("dependency_missing", "pingram SDK not installed", retryable=False)
             return False
 
-        app = web.Application()
-        app.router.add_post(self.webhook_path, self._handle_webhook)
-        app.router.add_get("/health", self._handle_health)
-
-        try:
-            self._runner = web.AppRunner(app)
-            await self._runner.setup()
-            self._site = web.TCPSite(self._runner, self.webhook_host, self.webhook_port)
-            await self._site.start()
-        except Exception as e:
-            logger.error("Pingram: failed to start webhook server on %s:%s — %s",
-                         self.webhook_host, self.webhook_port, e)
-            self._set_fatal_error("webhook_bind_failed", str(e), retryable=True)
-            return False
-
-        if not self.webhook_secret and not self._warned_unsecured:
-            self._warned_unsecured = True
-            logger.warning(
-                "Pingram: running in UNSECURED mode — webhook signatures are not "
-                "verified. Set PINGRAM_WEBHOOK_SECRET (pingram_whsecret_...) to enable "
-                "HMAC verification. Recipient validation and the user allowlist still apply."
-            )
-
+        # Start the watermark at "now" so we don't replay the account's history
+        # on the first poll — only messages that arrive after startup are
+        # delivered.
+        self._poll_watermark_ms = int(time.time() * 1000)
+        self._poll_task = asyncio.create_task(self._poll_loop())
         self._mark_connected()
         logger.info(
-            "Pingram: webhook listening on http://%s:%s%s (channels: %s, mode: %s)",
-            self.webhook_host, self.webhook_port, self.webhook_path,
+            "Pingram: polling logs.getLogs every %ss (channels: %s); no public endpoint required",
+            self.poll_interval,
             ",".join(sorted(self.channels)),
-            "secured" if self.webhook_secret else "unsecured",
         )
         return True
 
     async def disconnect(self) -> None:
         self._mark_disconnected()
+        if self._poll_task is not None:
+            self._poll_task.cancel()
+            self._poll_task = None
         for task in list(self._tasks):
             if not task.done():
                 task.cancel()
         self._tasks.clear()
-        if self._site is not None:
-            try:
-                await self._site.stop()
-            except Exception:
-                pass
-            self._site = None
-        if self._runner is not None:
-            try:
-                await self._runner.cleanup()
-            except Exception:
-                pass
-            self._runner = None
 
-    # ── Webhook handling ──────────────────────────────────────────────────
-
-    async def _handle_health(self, request):
-        from aiohttp import web
-        return web.json_response({
-            "status": "ok",
-            "platform": "pingram",
-            "channels": sorted(self.channels),
-            "mode": "secured" if self.webhook_secret else "unsecured",
-        })
-
-    async def _handle_webhook(self, request):
-        from aiohttp import web
-        import json
-
-        raw = await request.read()
-
-        if self.webhook_secret and not self._verify_signature(raw, request.headers):
-            return web.Response(status=401, text="invalid signature")
-
-        try:
-            payload = json.loads(raw.decode("utf-8"))
-        except Exception:
-            return web.Response(status=400, text="invalid JSON")
-        if not isinstance(payload, dict):
-            return web.Response(status=400, text="invalid payload")
-
-        event_type = payload.get("eventType") or ""
-        if event_type == "SMS_INBOUND":
-            channel = "sms"
-        elif event_type == "EMAIL_INBOUND":
-            channel = "email"
-        else:
-            return web.json_response({"ok": True, "ignored": "event"})
-
-        if channel not in self.channels:
-            return web.json_response({"ok": True, "ignored": "channel"})
-
-        # Defense-in-depth: the inbound recipient must be *our* sender address.
-        to_value = payload.get("to", "")
-        if channel == "sms":
-            if self._from_sms_norm and _norm_phone(to_value) != self._from_sms_norm:
-                logger.debug("Pingram: dropping SMS to unexpected recipient %s", _redact_user(to_value))
-                return web.json_response({"ok": True, "ignored": "recipient"})
-        else:
-            if self.from_email and _norm_email(to_value) != self.from_email:
-                logger.debug("Pingram: dropping email to unexpected recipient %s", _redact_user(to_value))
-                return web.json_response({"ok": True, "ignored": "recipient"})
-
-        sender = payload.get("from", "")
-        if not self._is_allowed(channel, sender):
-            logger.info("Pingram: ignoring %s from unauthorized user %s", channel, _redact_user(sender))
-            return web.json_response({"ok": True, "ignored": "unauthorized"})
-
-        dedup_key = self._dedup_key(channel, payload, request.headers)
-        if self._is_duplicate(dedup_key):
-            return web.json_response({"ok": True, "ignored": "duplicate"})
-
-        # Build and dispatch in the background so we ACK Pingram immediately.
-        task = asyncio.create_task(self._process_inbound(channel, payload))
-        self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
-
-        return web.json_response({"ok": True})
-
-    def _verify_signature(self, raw: bytes, headers) -> bool:
-        try:
-            from pingram.webhooks import (
-                Webhooks,
-                WebhookSignatureError,
-                WebhookTimestampError,
-            )
-        except Exception:
-            logger.error("Pingram: PINGRAM_WEBHOOK_SECRET is set but the SDK verifier is unavailable")
-            return False
-
-        message_id = headers.get("X-Pingram-Id")
-        signature = headers.get("X-Pingram-Signature")
-        timestamp = headers.get("X-Pingram-Timestamp")
-        if not (message_id and signature and timestamp):
-            logger.warning("Pingram: webhook missing signature headers")
-            return False
-
-        try:
-            Webhooks.construct_event(
-                payload=raw,
-                message_id=message_id,
-                signature=signature,
-                timestamp=timestamp,
-                secret=self.webhook_secret,
-                tolerance=self.webhook_tolerance,
-            )
-            return True
-        except (WebhookSignatureError, WebhookTimestampError) as e:
-            logger.warning("Pingram: webhook signature rejected: %s", type(e).__name__)
-            return False
-        except Exception as e:
-            logger.warning("Pingram: webhook verification error: %s", e)
-            return False
+    # ── Inbound helpers ───────────────────────────────────────────────────
 
     def _is_allowed(self, channel: str, sender: Any) -> bool:
         if self.allow_all:
@@ -395,22 +288,6 @@ class PingramAdapter(BasePlatformAdapter):
         if channel == "sms":
             return _norm_phone(sender) in self._allowed_phones
         return _norm_email(sender) in self._allowed_emails
-
-    def _dedup_key(self, channel: str, payload: dict, headers) -> str:
-        tracking = headers.get("X-Pingram-Id")
-        if tracking:
-            return f"id:{tracking}"
-        if channel == "email" and payload.get("messageId"):
-            return f"mid:{payload['messageId']}"
-        digest = hashlib.sha256(
-            "|".join([
-                str(payload.get("from", "")),
-                str(payload.get("to", "")),
-                str(payload.get("text") or payload.get("bodyText") or payload.get("subject") or ""),
-                str(payload.get("receivedAt", "")),
-            ]).encode("utf-8")
-        ).hexdigest()
-        return f"h:{digest}"
 
     def _is_duplicate(self, key: str) -> bool:
         now = time.time()
@@ -434,6 +311,126 @@ class PingramAdapter(BasePlatformAdapter):
             raise
         except Exception:
             logger.exception("Pingram: error processing inbound %s", channel)
+
+    # ── Poll-mode inbound ─────────────────────────────────────────────────
+
+    async def _poll_loop(self) -> None:
+        """Periodically pull new inbound messages via logs.getLogs.
+
+        Each cycle fetches the newest messages, keeps those newer than a
+        watermark, and dispatches the inbound ones. trackingId dedup is the
+        authoritative guard against reprocessing; the watermark only bounds how
+        far back we page.
+        """
+        while True:
+            try:
+                await self._poll_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Pingram: poll cycle failed")
+            await asyncio.sleep(self.poll_interval)
+
+    async def _poll_once(self) -> None:
+        from pingram import Pingram
+
+        new_messages: List[Any] = []
+        highest_ms = self._poll_watermark_ms
+        cursor: Optional[str] = None
+        pages = 0
+
+        async with Pingram(api_key=self.api_key, region=self.region) as client:
+            while pages < _MAX_POLL_PAGES:
+                resp = await client.logs.logs_get_logs(limit=self.poll_limit, cursor=cursor)
+                messages = getattr(resp, "messages", None) or []
+                if not messages:
+                    break
+                # Messages are newest-first; once we cross the watermark every
+                # remaining (and subsequent page) entry is older, so we stop.
+                reached_old = False
+                for msg in messages:
+                    epoch = int(getattr(msg, "epoch_ms", 0) or 0)
+                    if epoch <= self._poll_watermark_ms:
+                        reached_old = True
+                        break
+                    new_messages.append(msg)
+                    if epoch > highest_ms:
+                        highest_ms = epoch
+                if reached_old:
+                    break
+                cursor = getattr(resp, "next_cursor", None)
+                if not cursor:
+                    break
+                pages += 1
+
+        # Dispatch oldest-first so a burst arrives in natural order.
+        for msg in reversed(new_messages):
+            self._handle_log_message(msg)
+
+        # Advance the watermark so the next cycle only sees newer messages.
+        self._poll_watermark_ms = max(self._poll_watermark_ms, highest_ms)
+
+    def _handle_log_message(self, msg: Any) -> None:
+        event_type = str(getattr(msg, "event_type", "") or "").lower()
+        if event_type == _LOG_EVENT_SMS_INBOUND:
+            channel = "sms"
+        elif event_type == _LOG_EVENT_EMAIL_INBOUND:
+            channel = "email"
+        else:
+            return  # not an inbound message (sent/delivered/opened/etc.)
+
+        if channel not in self.channels:
+            return
+
+        sender = getattr(msg, "var_from", None) or ""
+        if not self._is_allowed(channel, sender):
+            logger.info("Pingram: ignoring polled %s from unauthorized user %s", channel, _redact_user(sender))
+            return
+
+        tracking = str(getattr(msg, "tracking_id", "") or "")
+        epoch = int(getattr(msg, "epoch_ms", 0) or 0)
+        dedup_key = f"track:{tracking}" if tracking else f"poll:{channel}:{_norm_phone(sender) or sender}:{epoch}"
+        if self._is_duplicate(dedup_key):
+            return
+
+        payload = self._log_msg_to_payload(channel, msg)
+
+        # Run dispatch in the background so a long agent turn doesn't stall the
+        # poll loop.
+        task = asyncio.create_task(self._process_inbound(channel, payload))
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+
+    @staticmethod
+    def _log_msg_to_payload(channel: str, msg: Any) -> dict:
+        """Adapt a logs.getLogs message summary to the dict the ``_dispatch_*``
+        methods consume."""
+        tracking = getattr(msg, "tracking_id", None)
+        if channel == "sms":
+            media = []
+            for m in getattr(msg, "media", None) or []:
+                url = getattr(m, "url", None)
+                if url:
+                    media.append({"url": url, "contentType": getattr(m, "content_type", None)})
+            return {
+                "from": getattr(msg, "var_from", None) or "",
+                "text": getattr(msg, "body_text", None) or "",
+                "media": media,
+                "trackingId": tracking,
+            }
+        # Email. Inbound attachment content is not available via logs.getLogs
+        # (only metadata), so attachments are intentionally omitted here.
+        return {
+            "from": getattr(msg, "var_from", None) or "",
+            "subject": getattr(msg, "subject", None) or "",
+            "bodyText": getattr(msg, "body_text", None) or "",
+            "bodyHtml": getattr(msg, "body_html", None) or "",
+            "references": getattr(msg, "references", None),
+            "inReplyTo": getattr(msg, "in_reply_to", None),
+            "messageId": getattr(msg, "message_id", None),
+            "fromName": getattr(msg, "from_name", None),
+            "trackingId": tracking,
+        }
 
     # ── SMS inbound ───────────────────────────────────────────────────────
 
@@ -461,7 +458,7 @@ class PingramAdapter(BasePlatformAdapter):
         )
         event = MessageEvent(
             text=text,
-            message_type=MessageType.IMAGE if media_urls else MessageType.TEXT,
+            message_type=MessageType.PHOTO if media_urls else MessageType.TEXT,
             source=source,
             message_id=str(payload.get("trackingId") or int(time.time() * 1000)),
             timestamp=datetime.datetime.now(),
@@ -526,7 +523,7 @@ class PingramAdapter(BasePlatformAdapter):
         )
         event = MessageEvent(
             text=text,
-            message_type=MessageType.IMAGE if media_urls else MessageType.TEXT,
+            message_type=MessageType.PHOTO if media_urls else MessageType.TEXT,
             source=source,
             message_id=str(payload.get("messageId") or payload.get("trackingId") or int(time.time() * 1000)),
             timestamp=datetime.datetime.now(),
@@ -605,7 +602,7 @@ class PingramAdapter(BasePlatformAdapter):
         return SendResult(success=False, error=f"Unknown chat_id prefix: {chat_id}")
 
     async def _send_sms(self, number: str, content: str, *, attachment_note: str = "") -> SendResult:
-        if "sms" not in self.channels or not self.from_sms:
+        if "sms" not in self.channels:
             return SendResult(success=False, error="SMS channel not configured")
         message = (content or "").strip()
         if attachment_note:
@@ -613,15 +610,20 @@ class PingramAdapter(BasePlatformAdapter):
         if not message:
             return SendResult(success=False, error="Empty SMS message")
 
+        # ``from`` is optional — omit it so Pingram uses the account's default
+        # number unless the user pinned a specific verified sender.
+        sms_block: Dict[str, Any] = {"message": message}
+        if self.from_sms:
+            sms_block["from"] = self.from_sms
         body = {
             "type": self.notification_type,
             "to": {"id": number, "number": number},
-            "sms": {"message": message, "from": self.from_sms},
+            "sms": sms_block,
         }
         return await self._pingram_send(body)
 
     async def _send_email(self, chat_id: str, content: str, *, attachments: Optional[List[dict]] = None) -> SendResult:
-        if "email" not in self.channels or not self.from_email:
+        if "email" not in self.channels:
             return SendResult(success=False, error="Email channel not configured")
         ctx = self._reply_ctx.get(chat_id)
         to_email = (ctx or {}).get("to_email")
@@ -637,6 +639,12 @@ class PingramAdapter(BasePlatformAdapter):
             subject = f"Re: {subject}"
 
         email_block: Dict[str, Any] = {"subject": subject, "html": _text_to_html(content)}
+        # Sender name/address are optional overrides — omit them and Pingram
+        # uses the account default (e.g. noreply@pingram.io).
+        if self.from_name:
+            email_block["senderName"] = self.from_name
+        if self.from_email:
+            email_block["senderEmail"] = self.from_email
         options: Optional[Dict[str, Any]] = None
         if attachments:
             options = {"email": {"attachments": attachments}}
@@ -810,11 +818,15 @@ def check_requirements() -> bool:
 def validate_config(config) -> bool:
     extra = getattr(config, "extra", {}) or {}
     api_key = os.getenv("PINGRAM_API_KEY") or extra.get("api_key")
-    has_sender = (
-        os.getenv("PINGRAM_FROM_SMS") or extra.get("from_sms")
+    # A channel must be enabled. Senders are optional (Pingram defaults them),
+    # so fall back to legacy sender-presence inference when PINGRAM_CHANNELS is
+    # not set.
+    has_channel = (
+        os.getenv("PINGRAM_CHANNELS") or extra.get("channels")
+        or os.getenv("PINGRAM_FROM_SMS") or extra.get("from_sms")
         or os.getenv("PINGRAM_FROM_EMAIL") or extra.get("from_email")
     )
-    return bool(api_key and has_sender)
+    return bool(api_key and has_channel)
 
 
 def is_connected(config) -> bool:
@@ -824,28 +836,191 @@ def is_connected(config) -> bool:
 def _env_enablement() -> Optional[dict]:
     """Seed PlatformConfig.extra from env vars during gateway config load."""
     api_key = os.getenv("PINGRAM_API_KEY", "").strip()
+    channels = os.getenv("PINGRAM_CHANNELS", "").strip()
     from_sms = os.getenv("PINGRAM_FROM_SMS", "").strip()
     from_email = os.getenv("PINGRAM_FROM_EMAIL", "").strip()
-    if not (api_key and (from_sms or from_email)):
+    from_name = os.getenv("PINGRAM_FROM_NAME", "").strip()
+    # Enable when a channel is selected; senders are optional (Pingram defaults
+    # them). Legacy setups enable implicitly via a configured sender.
+    if not (api_key and (channels or from_sms or from_email)):
         return None
     seed: dict = {"api_key": api_key}
     if os.getenv("PINGRAM_REGION"):
         seed["region"] = os.getenv("PINGRAM_REGION").strip().lower()
+    if channels:
+        seed["channels"] = channels
     if from_sms:
         seed["from_sms"] = from_sms
     if from_email:
         seed["from_email"] = from_email
-    if os.getenv("PINGRAM_CHANNELS"):
-        seed["channels"] = os.getenv("PINGRAM_CHANNELS").strip()
-    if os.getenv("PINGRAM_WEBHOOK_HOST"):
-        seed["webhook_host"] = os.getenv("PINGRAM_WEBHOOK_HOST").strip()
-    if os.getenv("PINGRAM_WEBHOOK_PORT"):
-        seed["webhook_port"] = os.getenv("PINGRAM_WEBHOOK_PORT").strip()
-    if os.getenv("PINGRAM_WEBHOOK_PATH"):
-        seed["webhook_path"] = os.getenv("PINGRAM_WEBHOOK_PATH").strip()
+    if from_name:
+        seed["from_name"] = from_name
+    if os.getenv("PINGRAM_POLL_INTERVAL"):
+        seed["poll_interval"] = os.getenv("PINGRAM_POLL_INTERVAL").strip()
+    if os.getenv("PINGRAM_POLL_LIMIT"):
+        seed["poll_limit"] = os.getenv("PINGRAM_POLL_LIMIT").strip()
     if os.getenv("PINGRAM_NOTIFICATION_TYPE"):
         seed["notification_type"] = os.getenv("PINGRAM_NOTIFICATION_TYPE").strip()
     return seed
+
+
+def interactive_setup() -> None:
+    """Guided ``hermes setup gateway`` flow for Pingram.
+
+    Reached by selecting Pingram in the messaging-platforms menu. Lazy-imports
+    the CLI prompt helpers so the plugin stays importable in non-CLI contexts
+    (gateway runtime, tests). Only the region, API key, and a channel choice are
+    required; sender identity is optional (Pingram supplies defaults).
+    """
+    from hermes_cli.setup import (
+        prompt,
+        prompt_choice,
+        prompt_yes_no,
+        save_env_value,
+        get_env_value,
+        print_header,
+        print_info,
+        print_warning,
+        print_success,
+    )
+
+    print_header("Pingram")
+    if get_env_value("PINGRAM_API_KEY") and not prompt_yes_no("Pingram is already configured. Reconfigure?", False):
+        return
+
+    print_info("Chat with your Hermes agent over SMS and/or Email, routed through Pingram.")
+    print_info("You'll need a Pingram API key. Sender details are optional — Pingram")
+    print_info("uses sensible defaults when you leave them blank.")
+    print()
+
+    # Region first — it selects the API endpoint, so it must match the account's
+    # region before anything else (e.g. the key) is used.
+    print_info("Pick the region your Pingram account lives in (selects the API endpoint).")
+    regions = ["us", "eu", "ca"]
+    current_region = (get_env_value("PINGRAM_REGION") or "us").strip().lower()
+    default_idx = regions.index(current_region) if current_region in regions else 0
+    region = regions[prompt_choice("Region", ["US", "EU", "CA"], default_idx)]
+    save_env_value("PINGRAM_REGION", region)
+
+    api_key = prompt("Pingram API key (pingram_sk_...)", password=True)
+    if not api_key:
+        print_warning("API key is required — skipping Pingram setup.")
+        return
+    save_env_value("PINGRAM_API_KEY", api_key.strip())
+
+    # Channel selection drives everything else. Senders are optional per channel.
+    print()
+    print_info("Choose which channels your agent should use.")
+    existing_channels = {c for c in _parse_csv(get_env_value("PINGRAM_CHANNELS") or "") if c in {"sms", "email"}}
+    channel_options = ["SMS only", "Email only", "Both SMS and Email"]
+    if existing_channels == {"sms"}:
+        channel_default = 0
+    elif existing_channels == {"email"}:
+        channel_default = 1
+    elif existing_channels == {"sms", "email"}:
+        channel_default = 2
+    else:
+        channel_default = 2
+    channel_idx = prompt_choice("Which channels do you want to enable?", channel_options, channel_default)
+    channels = {0: {"sms"}, 1: {"email"}, 2: {"sms", "email"}}[channel_idx]
+    save_env_value("PINGRAM_CHANNELS", ",".join(sorted(channels)))
+
+    # SMS sender — default Pingram number, or a specific verified number.
+    if "sms" in channels:
+        print()
+        print_info("SMS sender number (the 'from' your texts come from).")
+        existing_sms = (get_env_value("PINGRAM_FROM_SMS") or "").strip()
+        sms_sender_idx = prompt_choice(
+            "Which number should send your SMS replies?",
+            [
+                "Use my Pingram account's default number (recommended)",
+                "Use a specific number from my Pingram account",
+            ],
+            1 if existing_sms else 0,
+        )
+        if sms_sender_idx == 1:
+            sms_from = prompt(
+                "Pingram sender number (E.164, e.g. +15551234567)",
+                default=existing_sms,
+            )
+            save_env_value("PINGRAM_FROM_SMS", sms_from.strip())
+            if not sms_from.strip():
+                print_info("Left blank — Pingram will use your account's default number.")
+        else:
+            save_env_value("PINGRAM_FROM_SMS", "")
+    else:
+        save_env_value("PINGRAM_FROM_SMS", "")
+
+    # Email sender identity — both fields optional; blank uses Pingram defaults.
+    if "email" in channels:
+        print()
+        print_info("Email sender identity. Both fields are optional — leave them blank to")
+        print_info("use Pingram's defaults.")
+        from_name = prompt(
+            'Sender display name (e.g. "My Bot") — blank for default (Pingram)',
+            default=get_env_value("PINGRAM_FROM_NAME") or "",
+        )
+        save_env_value("PINGRAM_FROM_NAME", from_name.strip())
+        from_email = prompt(
+            "Sender email address (e.g. noreply@yourdomain.com) — blank for default (noreply@pingram.io)",
+            default=get_env_value("PINGRAM_FROM_EMAIL") or "",
+        )
+        save_env_value("PINGRAM_FROM_EMAIL", from_email.strip())
+    else:
+        save_env_value("PINGRAM_FROM_NAME", "")
+        save_env_value("PINGRAM_FROM_EMAIL", "")
+
+    # Access control.
+    print()
+    print_info("Access control: restrict who can talk to the agent.")
+    if prompt_yes_no("Allow ALL users to message the agent? (dev only)", False):
+        save_env_value("PINGRAM_ALLOW_ALL_USERS", "true")
+        save_env_value("PINGRAM_ALLOWED_USERS", "")
+        print_warning("Open access — anyone who texts/emails your address can use the agent.")
+    else:
+        save_env_value("PINGRAM_ALLOW_ALL_USERS", "false")
+        # One allowlist env var, but ask per enabled channel so the prompts only
+        # cover what's relevant (phones for SMS, emails for Email).
+        existing = _parse_csv(get_env_value("PINGRAM_ALLOWED_USERS") or "")
+        existing_phones = ",".join(u for u in existing if "@" not in u)
+        existing_emails = ",".join(u for u in existing if "@" in u)
+        allowed: List[str] = []
+        if "sms" in channels:
+            phones = prompt(
+                "Allowed phone numbers for SMS (comma-separated, E.164)",
+                default=existing_phones,
+            )
+            allowed += _parse_csv(phones)
+        if "email" in channels:
+            emails = prompt(
+                "Allowed email addresses for Email (comma-separated)",
+                default=existing_emails,
+            )
+            allowed += _parse_csv(emails)
+        save_env_value("PINGRAM_ALLOWED_USERS", ",".join(allowed))
+        if not allowed:
+            print_warning("No users allowlisted — inbound messages will be ignored until you add some.")
+
+    # Inbound polling cadence. Hermes pulls new messages from Pingram on a timer;
+    # there's no public endpoint or webhook to configure.
+    print()
+    print_info("Hermes receives incoming messages by polling Pingram (no public URL needed).")
+    interval = prompt(
+        "Seconds between polls",
+        default=get_env_value("PINGRAM_POLL_INTERVAL") or str(DEFAULT_POLL_INTERVAL),
+    )
+    save_env_value("PINGRAM_POLL_INTERVAL", interval.strip() or str(DEFAULT_POLL_INTERVAL))
+    if "email" in channels:
+        print_warning("Note: inbound email attachments are not downloaded when polling "
+                      "(SMS/MMS images still work).")
+
+    print()
+    print_success("Pingram configured!")
+    print_info("Next steps:")
+    print_info("  1. Start the gateway: hermes gateway")
+    print_info(f"  2. That's it — Hermes polls Pingram every {interval.strip() or DEFAULT_POLL_INTERVAL}s "
+               "for new messages.")
+    print_info("     No public URL or webhook subscription required.")
 
 
 def register(ctx):
@@ -857,9 +1032,10 @@ def register(ctx):
         check_fn=check_requirements,
         validate_config=validate_config,
         is_connected=is_connected,
-        required_env=["PINGRAM_API_KEY"],
-        install_hint="pip install pingram aiohttp",
+        required_env=["PINGRAM_API_KEY", "PINGRAM_REGION"],
+        install_hint="pip install hermes-pingram-gateway  (or: pip install pingram-python aiohttp)",
         env_enablement_fn=_env_enablement,
+        setup_fn=interactive_setup,
         allowed_users_env="PINGRAM_ALLOWED_USERS",
         allow_all_env="PINGRAM_ALLOW_ALL_USERS",
         emoji="📨",
@@ -871,6 +1047,7 @@ def register(ctx):
             "plain text only (no markdown), keep it short (messages are split into "
             "~160-character segments), and avoid links where possible. For Email, a "
             "subject and light HTML are fine; replies are threaded as 'Re:'. "
-            "Inbound MMS images and email attachments are provided to you as media."
+            "Inbound MMS images are provided to you as media (inbound email "
+            "attachments are not available)."
         ),
     )

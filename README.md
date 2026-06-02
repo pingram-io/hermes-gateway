@@ -3,18 +3,19 @@
 Chat with your [Hermes](https://github.com/NousResearch/hermes) agent over **SMS**
 and **Email**, routed through [Pingram](https://pingram.io). Text or email your
 Pingram number/address and the agent replies on the same channel — including
-inbound MMS images and email attachments.
+inbound MMS images.
 
 This is a self-contained Hermes **platform plugin**: one `plugin.yaml` + one
 `adapter.py`. It registers a single `pingram` platform that serves both channels
-(Pingram uses one API key and one webhook URL for both). It requires **zero
-changes to Hermes core**.
+(Pingram uses one API key for both). Inbound messages are received by **polling**
+Pingram's logs API on a timer — there's **no public endpoint or webhook to set
+up**. It requires **zero changes to Hermes core**.
 
 ```mermaid
 flowchart LR
   human["Human"] -->|"SMS / Email"| pingram["Pingram"]
-  pingram -->|"POST eventType=SMS_INBOUND / EMAIL_INBOUND"| webhook["aiohttp server in PingramAdapter (/webhooks/pingram)"]
-  webhook -->|"MessageEvent"| agent["Hermes agent session"]
+  pingram -->|"logs.getLogs (polled every N seconds)"| adapter["PingramAdapter"]
+  adapter -->|"MessageEvent"| agent["Hermes agent session"]
   agent -->|"reply"| send["PingramAdapter.send()"]
   send -->|"Pingram Python SDK"| pingram
   pingram -->|"SMS / Email"| human
@@ -26,40 +27,90 @@ The channel is encoded in the Hermes `chat_id` prefix: `sms:{phone}` and
 ## Requirements
 
 - A running Hermes agent (`hermes gateway`).
-- A Pingram account with a verified SMS sender number and/or a verified email
-  sending domain, plus an API key (`pingram_sk_...`).
-- Python packages `pingram` and `aiohttp` available to the gateway.
-- A way to expose the webhook port to Pingram (a public host, or `ngrok` for
-  local development — see [`examples/`](examples/)).
+- A Pingram account with an API key (`pingram_sk_...`). Sender identity is
+  optional — Pingram provides a default SMS number and email sender, so you can
+  start without provisioning your own.
+- Python packages `pingram-python` (the Pingram SDK) and `aiohttp` available to
+  the gateway — installed automatically with the `pip install` method below.
+- No public host, tunnel, or webhook registration is required — the adapter
+  polls Pingram for new messages.
 
 ## Install
 
+### Option 1: pip (recommended)
+
+Install from PyPI into the same environment as your Hermes agent. This pulls in
+the Pingram SDK and `aiohttp` for you, and registers the plugin via its
+`hermes_agent.plugins` entry point — the gateway discovers it automatically.
+
+```bash
+pip install hermes-pingram-gateway
+```
+
+> `hermes-pingram-gateway` is the plugin. It depends on `pingram-python`, the
+> Pingram SDK (imported as `pingram`); the two are separate packages.
+
+### Option 2: hermes plugins install (from source)
+
 ```bash
 hermes plugins install pingram-io/hermes-gateway
-pip install pingram aiohttp
+pip install pingram-python aiohttp
 ```
 
 `hermes plugins install` git-clones this repo into `~/.hermes/plugins/pingram/`
-and the gateway auto-discovers it on next start.
+and the gateway auto-discovers it on next start. Because it doesn't install
+Python dependencies, you install the SDK and `aiohttp` yourself.
 
 ## Configure
 
-Set these in your Hermes env (`~/.hermes/.env`) — see [`.env.example`](.env.example)
-for the full list. At minimum you need the API key and one sender.
+You can configure Pingram two ways — a guided wizard (recommended) or by
+editing env vars directly.
+
+### Option A: Guided setup (recommended)
+
+First enable the plugin so it shows up in the gateway setup menu, then run the
+wizard:
 
 ```bash
-PINGRAM_API_KEY=pingram_sk_...
-PINGRAM_REGION=us                       # us | eu | ca
-
-# Configure at least one sender — each enables its channel:
-PINGRAM_FROM_SMS=+15551234567           # verified Pingram/Telnyx number
-PINGRAM_FROM_EMAIL=agent@yourdomain.com # verified sending domain
-
-# Recommended: secure the webhook + restrict who can talk to the agent
-PINGRAM_WEBHOOK_SECRET=pingram_whsecret_...
-PINGRAM_ALLOWED_USERS=+15559876543,you@yourdomain.com
-PINGRAM_ALLOW_ALL_USERS=false
+hermes plugins enable pingram
+hermes setup gateway
 ```
+
+Select **Pingram** from the messaging-platforms list and answer the prompts.
+The wizard asks for your region and API key, then which channel(s) to enable
+(SMS, Email, or both). Sender details are optional — for SMS you can use your
+Pingram account's default number or pin a specific one; for Email you can set a
+display name and address or leave them blank for Pingram's defaults. It also
+asks how often to poll for new messages (default every 15s). It writes
+everything to `~/.hermes/.env` for you — then just start the gateway.
+
+### Option B: Manual env vars
+
+Set these in your Hermes env (`~/.hermes/.env`) — see [`.env.example`](.env.example)
+for the full list. At minimum you need the API key, region, and channel(s).
+
+```bash
+# Required:
+PINGRAM_API_KEY=pingram_sk_...
+PINGRAM_REGION=us                        # us | eu | ca — must match your Pingram account's region
+PINGRAM_CHANNELS=sms,email               # which channels to enable: sms, email, or both
+
+# Senders are OPTIONAL — leave them unset to use Pingram's account defaults.
+#PINGRAM_FROM_SMS=+15551234567           # pin a specific verified Pingram number
+#PINGRAM_FROM_EMAIL=agent@yourdomain.com # sender address on a verified domain
+#PINGRAM_FROM_NAME=My Bot                # email sender display name
+
+# Inbound polling cadence (optional):
+#PINGRAM_POLL_INTERVAL=15                # seconds between polls (default 15)
+#PINGRAM_POLL_LIMIT=50                   # max messages fetched per poll page
+
+# Everything below is optional (defaults shown / commented out):
+#PINGRAM_ALLOWED_USERS=+15559876543,you@yourdomain.com
+#PINGRAM_ALLOW_ALL_USERS=false           # dev only
+```
+
+> Set `PINGRAM_REGION` to the region your Pingram account lives in (`us`, `eu`,
+> or `ca`). It selects the API endpoint — the wrong value will fail to send.
 
 Enable the platform in your gateway config (`~/.hermes/config.yaml`):
 
@@ -78,64 +129,59 @@ Start (or restart) the gateway:
 hermes gateway restart
 ```
 
-The adapter starts an HTTP server on `PINGRAM_WEBHOOK_PORT` (default `8650`) with:
+## How inbound messages are received
 
-- `POST /webhooks/pingram` — Pingram delivers inbound SMS/Email here.
-- `GET /health` — readiness/health check.
+The adapter polls Pingram's logs API (`logs.getLogs`) every
+`PINGRAM_POLL_INTERVAL` seconds (default 15). Each cycle it fetches the newest
+messages, keeps the ones that arrived since the last poll, and dispatches the
+inbound SMS/Email to your agent. A startup watermark means only messages that
+arrive **after** the gateway starts are delivered (history isn't replayed), and
+per-message tracking-id deduplication guards against reprocessing.
 
-## Point Pingram at your webhook
+This means there's nothing to expose to the internet — no public host, tunnel,
+or webhook registration. Just start the gateway and text/email your Pingram
+number/address.
 
-In the **Pingram dashboard**, create a webhook whose URL is your public address
-plus the webhook path, and subscribe it to the **`SMS_INBOUND`** and/or
-**`EMAIL_INBOUND`** events:
+Trade-offs versus a push webhook:
 
-```
-https://<your-public-host>/webhooks/pingram
-```
-
-For local development, expose the port with ngrok (see
-[`examples/docker-compose.yml`](examples/docker-compose.yml)) and use the
-generated `https://<id>.ngrok-free.app/webhooks/pingram` URL.
-
-When you create the webhook, Pingram gives you a signing secret
-(`pingram_whsecret_...`). Put it in `PINGRAM_WEBHOOK_SECRET` to enable signature
-verification (**secured mode**).
+- **Latency**: delivery is delayed by up to one poll interval (lower the
+  interval for snappier replies, at the cost of more API calls).
+- **Email attachments**: inbound email **attachments are not downloaded** —
+  Pingram's logs API returns attachment metadata only, not content. Inbound
+  **SMS/MMS images are fetched** and passed to the agent for vision. Outbound
+  file replies (the agent attaching files to an email) still work.
 
 ## SMS quickstart
 
-1. Set `PINGRAM_API_KEY` and `PINGRAM_FROM_SMS`.
+1. Set `PINGRAM_API_KEY`, `PINGRAM_REGION`, and `PINGRAM_CHANNELS=sms`.
+   Optionally pin `PINGRAM_FROM_SMS`; otherwise Pingram uses your default number.
 2. Add your phone to `PINGRAM_ALLOWED_USERS`.
-3. Start the gateway and register the webhook URL for `SMS_INBOUND`.
-4. Text your Pingram number — the agent replies by SMS. Inbound MMS images are
-   passed to the agent for vision.
+3. Start the gateway.
+4. Text your Pingram number — the agent replies by SMS within a poll interval.
+   Inbound MMS images are passed to the agent for vision.
 
 ## Email quickstart
 
-1. Set `PINGRAM_API_KEY` and `PINGRAM_FROM_EMAIL`.
+1. Set `PINGRAM_API_KEY`, `PINGRAM_REGION`, and `PINGRAM_CHANNELS=email`.
+   Optionally set `PINGRAM_FROM_EMAIL` / `PINGRAM_FROM_NAME`; otherwise Pingram
+   uses its default sender.
 2. Add your email to `PINGRAM_ALLOWED_USERS`.
-3. Start the gateway and register the webhook URL for `EMAIL_INBOUND`.
-4. Email your Pingram address — the agent replies in-thread (`Re:` subject).
-   Inbound attachments are passed to the agent; the agent's file replies are
-   sent back as email attachments.
+3. Start the gateway.
+4. Email your Pingram address — the agent replies in-thread (`Re:` subject)
+   within a poll interval. The agent's file replies are sent back as email
+   attachments. (Inbound email attachments are not downloaded when polling.)
 
 ## Security
 
-Webhook signature verification is **optional and keyed on
-`PINGRAM_WEBHOOK_SECRET`**:
+The logs API is account-scoped and authenticated by `PINGRAM_API_KEY`, so there's
+no inbound endpoint to authenticate. Defense-in-depth still applies to who the
+agent will talk to:
 
-- **Secured mode** (secret set): every webhook's `X-Pingram-Signature`
-  (HMAC-SHA256 over `id.timestamp.body`) is verified via the Pingram SDK.
-  Bad/missing signatures or stale timestamps are rejected with `401`.
-- **Unsecured mode** (no secret): signatures are not checked; a one-time startup
-  warning is logged.
-
-Either way, defense-in-depth always applies:
-
-- **Recipient validation** — inbound `to` must match your configured sender.
-- **User allowlist** — `from` must be in `PINGRAM_ALLOWED_USERS` unless
-  `PINGRAM_ALLOW_ALL_USERS=true`.
-- **Deduplication** — repeated deliveries (by tracking id / message id / content
-  hash) are dropped.
+- **User allowlist** — an inbound message's `from` must be in
+  `PINGRAM_ALLOWED_USERS` unless `PINGRAM_ALLOW_ALL_USERS=true`. With no
+  allowlist and `false`, inbound messages are ignored.
+- **Deduplication** — each message is processed once (keyed on its Pingram
+  tracking id), even if it appears across consecutive polls.
 - Message bodies and secrets are never logged; phone numbers/emails are redacted.
 
 ## Configuration reference
@@ -143,25 +189,26 @@ Either way, defense-in-depth always applies:
 | Env var | Required | Default | Description |
 | --- | --- | --- | --- |
 | `PINGRAM_API_KEY` | yes | — | Pingram API key (`pingram_sk_...`). |
-| `PINGRAM_REGION` | no | `us` | `us` \| `eu` \| `ca`. |
-| `PINGRAM_FROM_SMS` | one of | — | SMS sender number (E.164). Enables SMS. |
-| `PINGRAM_FROM_EMAIL` | one of | — | Email sender address. Enables Email. |
-| `PINGRAM_CHANNELS` | no | inferred | Channel filter, e.g. `sms,email`. |
-| `PINGRAM_WEBHOOK_HOST` | no | `0.0.0.0` | Bind host. |
-| `PINGRAM_WEBHOOK_PORT` | no | `8650` | Bind port. |
-| `PINGRAM_WEBHOOK_PATH` | no | `/webhooks/pingram` | Webhook path. |
-| `PINGRAM_WEBHOOK_SECRET` | no | — | Signing secret → secured mode. |
-| `PINGRAM_WEBHOOK_TOLERANCE` | no | `300` | Signature timestamp tolerance (s). |
+| `PINGRAM_REGION` | yes | `us` | `us` \| `eu` \| `ca`. Must match your account's region — selects the API endpoint. |
+| `PINGRAM_CHANNELS` | yes* | inferred | Channels to enable: `sms`, `email`, or `sms,email`. *Optional only if a sender is set (legacy inference). |
+| `PINGRAM_FROM_SMS` | no | Pingram default | Pin a specific verified SMS sender number (E.164). Blank → account default. |
+| `PINGRAM_FROM_EMAIL` | no | `noreply@pingram.io` | Email sender address (verified domain). Blank → Pingram default. |
+| `PINGRAM_FROM_NAME` | no | Pingram default | Email sender display name (e.g. `My Bot`). |
+| `PINGRAM_POLL_INTERVAL` | no | `15` | Seconds between polls for new inbound messages. |
+| `PINGRAM_POLL_LIMIT` | no | `50` | Max messages fetched per poll page. |
 | `PINGRAM_ALLOWED_USERS` | no | — | Allowed phones/emails (CSV). |
 | `PINGRAM_ALLOW_ALL_USERS` | no | `false` | Allow everyone (dev only). |
 | `PINGRAM_NOTIFICATION_TYPE` | no | `hermes_agent_reply` | Pingram notification `type`. |
 
 ## Known limitations (V1)
 
+- **Inbound email attachments**: not downloaded. Polling Pingram's logs API
+  returns attachment metadata only, not content. Inbound SMS/MMS images and
+  outbound email file replies work fully.
+- **Latency**: inbound delivery is delayed by up to one `PINGRAM_POLL_INTERVAL`.
 - **Outbound SMS MMS**: the Pingram send API has no SMS media field, so the agent
   can't attach locally-generated images to an SMS. If a public image URL is
   available it's appended to the message text; otherwise a short note is added.
-  Email attachments (in and out) and inbound MMS work fully.
 
 ## License
 

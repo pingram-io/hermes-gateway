@@ -4,6 +4,12 @@ __pycache__/
 *.env
 !*.env.example
 
+# Python build artifacts (PyPI packaging)
+build/
+dist/
+*.egg-info/
+.eggs/
+
 # Internal planning notes (kept locally, not published)
 PLAN.md
 CONVERSATION.md

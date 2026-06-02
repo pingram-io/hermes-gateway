@@ -1,0 +1,54 @@
+# Publish the Hermes Pingram gateway plugin to PyPI via Trusted Publishing (OIDC).
+#
+# No API token needed: PyPI is configured with a GitHub trusted publisher for
+# this repo + this workflow file (deploy.yml). The publish action exchanges the
+# job's OIDC token for a short-lived PyPI credential, so `id-token: write` is
+# required. The filename MUST stay `deploy.yml` to match the publisher config.
+#
+# Bump `version` in pyproject.toml to trigger a release; pushes that don't
+# change the version are no-ops (the publish step is skipped).
+name: Publish to PyPI
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'pyproject.toml'
+  workflow_dispatch: {}
+
+jobs:
+  publish:
+    name: Build & publish
+    runs-on: ubuntu-latest
+    permissions:
+      # Required for PyPI Trusted Publishing (OIDC token exchange).
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install build tooling
+        run: pip install build
+
+      - name: Get current and published versions
+        id: versions
+        run: |
+          CURRENT=$(grep -Po '(?<=^version = ")[^"]+' pyproject.toml)
+          echo "current=$CURRENT" >> $GITHUB_OUTPUT
+          PUBLISHED=$(pip index versions hermes-pingram-gateway 2>/dev/null | grep -oP '\(\K[^)]+' | head -1 || echo "")
+          echo "published=$PUBLISHED" >> $GITHUB_OUTPUT
+          if [ "$CURRENT" != "$PUBLISHED" ]; then echo "should_publish=true" >> $GITHUB_OUTPUT; else echo "should_publish=false" >> $GITHUB_OUTPUT; fi
+
+      - name: Build package
+        if: steps.versions.outputs.should_publish == 'true'
+        run: python -m build
+
+      - name: Publish to PyPI (Trusted Publishing)
+        if: steps.versions.outputs.should_publish == 'true'
+        uses: pypa/gh-action-pypi-publish@release/v1
