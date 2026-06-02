@@ -10,17 +10,14 @@ description: >
   combined `pingram` platform serves both channels; the channel is encoded in
   the Hermes chat_id prefix (`sms:` / `email:`).
 author: Pingram
-# ``requires_env`` entries are surfaced in ``hermes config`` UI via the
-# platform-plugin env var injector in ``hermes_cli/config.py``.
-requires_env:
-  - name: PINGRAM_API_KEY
-    description: "Pingram API key (pingram_sk_...)"
-    prompt: "Pingram API key"
-    password: true
-  - name: PINGRAM_REGION
-    description: "Pingram region: us | eu | ca. Must match your account's region — it selects the API endpoint, and the wrong value will fail to send. Default: us."
-    prompt: "Region (us/eu/ca)"
-    password: false
+# NOTE: no ``requires_env`` block on purpose. ``hermes plugins install`` prompts
+# for every ``requires_env`` entry at install time; we deliberately defer ALL
+# configuration (API key, region, channels, allowlist) to the guided
+# ``hermes setup gateway`` wizard instead, so installing the plugin is
+# prompt-free. The authoritative "required" vars (PINGRAM_API_KEY,
+# PINGRAM_REGION) are declared in the adapter's ``register(required_env=[...])``
+# and collected by the wizard. The entries below are optional/advanced and are
+# never prompted at install (only ``requires_env`` is).
 optional_env:
   - name: PINGRAM_CHANNELS
     description: "Comma-separated channels to enable: sms, email, or both (sms,email). This is what turns each channel on. Default: inferred from any configured sender (legacy)."
