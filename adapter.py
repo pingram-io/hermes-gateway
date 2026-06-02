@@ -34,6 +34,11 @@ Configuration (env vars override config.yaml ``extra``):
     PINGRAM_NOTIFICATION_TYPE  Pingram notification `type` for replies
                                (default: hermes_agent_reply)
 
+The Pingram SDK is auto-installed into the active Hermes venv on first run if it
+isn't already present (so ``hermes plugins install <repo>`` works without a
+separate ``pip install``). This is venv-scoped and can be disabled with
+``security.allow_lazy_installs: false`` in ``config.yaml``.
+
 Note: inbound email *attachments* are not downloaded in polling mode (Pingram's
 logs API returns attachment metadata only). Inbound SMS/MMS images work fully.
 """
@@ -45,7 +50,11 @@ import html as html_lib
 import logging
 import os
 import re
+import shutil
+import subprocess
+import sys
 import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from gateway.platforms.base import (
@@ -63,6 +72,17 @@ logger = logging.getLogger(__name__)
 DEFAULT_NOTIFICATION_TYPE = "hermes_agent_reply"
 _DEDUP_TTL_SECONDS = 3600
 _DOWNLOAD_TIMEOUT = 30
+
+# Runtime Python dependencies. `hermes plugins install <repo>` clones the plugin
+# but does NOT pip-install its deps, so we fetch the Pingram SDK on first run if
+# it's missing. aiohttp ships with Hermes' messaging stack but is listed here for
+# completeness/robustness. Specs are bare PyPI package names only (no URLs / index
+# overrides) so this stays a safe, venv-scoped install path.
+_PINGRAM_IMPORT = "pingram"
+_PINGRAM_PACKAGE = "pingram-python"
+_AIOHTTP_IMPORT = "aiohttp"
+_AIOHTTP_PACKAGE = "aiohttp"
+_INSTALL_TIMEOUT = 300
 
 # Inbound polling.
 DEFAULT_POLL_INTERVAL = 15
@@ -134,6 +154,138 @@ def _ext_for_content_type(content_type: str) -> str:
 
 def _is_image(content_type: str) -> bool:
     return (content_type or "").split("/", 1)[0].strip().lower() == "image"
+
+
+# ---------------------------------------------------------------------------
+# First-run dependency bootstrap
+#
+# Mirrors Hermes core's tools/lazy_deps.py behaviour (uv → pip → ensurepip
+# ladder, venv-scoped to sys.executable, gated by security.allow_lazy_installs)
+# but kept self-contained: tools.lazy_deps.ensure() only installs packages that
+# appear in its hard-coded allowlist, which a third-party plugin can't extend.
+# ---------------------------------------------------------------------------
+
+def _lazy_installs_allowed() -> bool:
+    """Honour the same opt-out as Hermes' lazy installer (defaults to on).
+
+    Fails open (returns True) when config can't be read, matching core
+    behaviour — refusing to install would lock users out of their own backend.
+    """
+    if os.environ.get("HERMES_DISABLE_LAZY_INSTALLS") == "1":
+        return False
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+    except Exception:
+        return True
+    sec = (cfg.get("security") or {}) if isinstance(cfg, dict) else {}
+    return bool(sec.get("allow_lazy_installs", True))
+
+
+def _venv_pip_install(specs: List[str], *, timeout: int = _INSTALL_TIMEOUT) -> Tuple[bool, str]:
+    """Install ``specs`` into the active venv (uv → pip → ensurepip ladder).
+
+    Venv-scoped: targets ``sys.executable``'s environment, never the system
+    Python. Returns ``(success, error_output)``.
+    """
+    if not specs:
+        return True, ""
+
+    # sys.executable is <venv>/bin/python; the venv root is two levels up.
+    venv_root = Path(sys.executable).parent.parent
+    uv_env = {**os.environ, "VIRTUAL_ENV": str(venv_root)}
+
+    # Tier 1: uv (preferred — fast, and Hermes' venv is uv-managed without pip).
+    uv_bin = shutil.which("uv")
+    if uv_bin:
+        try:
+            r = subprocess.run(
+                [uv_bin, "pip", "install", "--python", sys.executable, *specs],
+                capture_output=True, text=True, timeout=timeout, env=uv_env,
+            )
+            if r.returncode == 0:
+                return True, ""
+            logger.debug("Pingram: uv pip install failed: %s", r.stderr)
+        except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+            logger.debug("Pingram: uv invocation failed: %s", e)
+
+    # Tier 2: python -m pip (bootstrap with ensurepip if pip isn't present).
+    pip_cmd = [sys.executable, "-m", "pip"]
+    try:
+        probe = subprocess.run(pip_cmd + ["--version"], capture_output=True, text=True, timeout=15)
+        if probe.returncode != 0:
+            raise FileNotFoundError("pip not in venv")
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        try:
+            subprocess.run(
+                [sys.executable, "-m", "ensurepip", "--upgrade", "--default-pip"],
+                capture_output=True, text=True, timeout=120, check=True,
+            )
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+            return False, f"pip unavailable and ensurepip failed: {e}"
+
+    try:
+        r = subprocess.run(pip_cmd + ["install", *specs], capture_output=True, text=True, timeout=timeout)
+        return (r.returncode == 0), (r.stderr or r.stdout or "")
+    except subprocess.TimeoutExpired as e:
+        return False, f"pip install timed out: {e}"
+    except Exception as e:  # noqa: BLE001
+        return False, str(e)
+
+
+def _ensure_importable(import_name: str, pip_spec: str) -> bool:
+    """Ensure ``import_name`` is importable, installing ``pip_spec`` if not.
+
+    Blocking (subprocess + import); call via ``asyncio.to_thread`` from async
+    code. Returns True once the module is importable, False if the install was
+    gated off or failed.
+    """
+    import importlib
+
+    try:
+        importlib.import_module(import_name)
+        return True
+    except ImportError:
+        pass
+
+    if not _lazy_installs_allowed():
+        logger.error(
+            "Pingram: '%s' is not installed and lazy installs are disabled "
+            "(security.allow_lazy_installs=false). Install it manually with: "
+            "uv pip install %s",
+            import_name, pip_spec,
+        )
+        return False
+
+    logger.info("Pingram: '%s' missing — installing %s into the active venv ...", import_name, pip_spec)
+    ok, err = _venv_pip_install([pip_spec])
+    if not ok:
+        logger.error("Pingram: failed to install %s: %s", pip_spec, (err or "").strip()[-800:])
+        return False
+
+    # importlib caches negative imports and metadata per process; refresh both
+    # before retrying so the freshly installed package is visible.
+    importlib.invalidate_caches()
+    try:
+        import importlib.metadata as _md
+
+        if hasattr(_md, "_cache_clear"):
+            _md._cache_clear()  # type: ignore[attr-defined]
+    except Exception:
+        pass
+
+    try:
+        importlib.import_module(import_name)
+        logger.info("Pingram: installed %s.", pip_spec)
+        return True
+    except ImportError:
+        logger.error(
+            "Pingram: installed %s but '%s' is still not importable "
+            "(a gateway restart may be required).",
+            pip_spec, import_name,
+        )
+        return False
 
 
 def _text_to_html(text: str) -> str:
@@ -240,21 +392,20 @@ class PingramAdapter(BasePlatformAdapter):
             )
             return False
 
-        # aiohttp is used to download inbound MMS media.
-        try:
-            import aiohttp  # noqa: F401
-        except ImportError:
-            logger.error("Pingram: aiohttp is required (pip install aiohttp)")
+        # Ensure runtime deps. When installed via `hermes plugins install <repo>`
+        # (a git clone), the plugin's Python deps aren't pip-installed, so fetch
+        # the Pingram SDK on first run if it's missing. Runs in a thread so the
+        # blocking pip/uv subprocess doesn't stall the event loop. aiohttp is
+        # used to download inbound MMS media; the SDK polls + sends.
+        if not await asyncio.to_thread(_ensure_importable, _AIOHTTP_IMPORT, _AIOHTTP_PACKAGE):
             self._set_fatal_error("dependency_missing", "aiohttp not installed", retryable=False)
             return False
-
-        # Fail fast if the Pingram SDK is missing — it's used to poll for inbound
-        # messages and to send replies.
-        try:
-            import pingram  # noqa: F401
-        except ImportError:
-            logger.error("Pingram: the Pingram SDK is required (pip install pingram-python)")
-            self._set_fatal_error("dependency_missing", "pingram SDK not installed", retryable=False)
+        if not await asyncio.to_thread(_ensure_importable, _PINGRAM_IMPORT, _PINGRAM_PACKAGE):
+            self._set_fatal_error(
+                "dependency_missing",
+                "Pingram SDK not installed (run: uv pip install pingram-python)",
+                retryable=False,
+            )
             return False
 
         # Start the watermark at "now" so we don't replay the account's history
@@ -804,15 +955,19 @@ class PingramAdapter(BasePlatformAdapter):
 # ---------------------------------------------------------------------------
 
 def check_requirements() -> bool:
-    """True when the Pingram SDK + aiohttp are importable and a key is set."""
+    """True when the Pingram SDK + aiohttp are importable and a key is set.
+
+    The gateway uses this as the activation gate: ``create_adapter`` skips the
+    platform (never calling ``connect()``) when this returns False. So this is
+    also where the SDK is auto-installed — but only once an API key is present,
+    so we never install for users who haven't configured Pingram. The install is
+    venv-scoped and honours ``security.allow_lazy_installs``.
+    """
     if not os.getenv("PINGRAM_API_KEY"):
         return False
-    try:
-        import pingram  # noqa: F401
-        import aiohttp  # noqa: F401
-    except ImportError:
-        return False
-    return True
+    return _ensure_importable(_AIOHTTP_IMPORT, _AIOHTTP_PACKAGE) and _ensure_importable(
+        _PINGRAM_IMPORT, _PINGRAM_PACKAGE
+    )
 
 
 def validate_config(config) -> bool:
@@ -1033,7 +1188,7 @@ def register(ctx):
         validate_config=validate_config,
         is_connected=is_connected,
         required_env=["PINGRAM_API_KEY", "PINGRAM_REGION"],
-        install_hint="pip install hermes-pingram-gateway  (or: pip install pingram-python aiohttp)",
+        install_hint="hermes plugins install pingram-io/hermes-gateway  (SDK auto-installs on first run; or: pip install hermes-pingram-gateway)",
         env_enablement_fn=_env_enablement,
         setup_fn=interactive_setup,
         allowed_users_env="PINGRAM_ALLOWED_USERS",
