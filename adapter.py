@@ -1228,30 +1228,53 @@ def interactive_setup() -> None:
     if account_emails and not (get_env_value("PINGRAM_FROM_EMAIL") or "").strip():
         save_env_value("PINGRAM_FROM_EMAIL", account_emails[0])
 
-    # Access control — the one safety-critical setting we still ask for. An empty
-    # allowlist makes Hermes ignore everyone; "allow all" would let anyone who
-    # texts/emails run the agent. One combined prompt covers both channels.
+    # Access control — the one safety-critical setting we still ask for. The user
+    # either limits access to specific senders (recommended) or opts into letting
+    # anyone who texts/emails the number run the agent. When limiting, we require
+    # at least one number or email so they're never silently locked out (an empty
+    # allowlist makes Hermes ignore everyone).
     print()
-    print_info("Access control: who is allowed to message your agent?")
+    print_info("Access control limits who can message your agent.")
     existing = _parse_csv(get_env_value("PINGRAM_ALLOWED_USERS") or "")
-    answer = prompt(
-        "What numbers and emails can message Hermes? "
-        "(comma-separated, e.g. +15005005000, you@example.com)",
-        default=",".join(existing),
+    existing_phones = [u for u in existing if "@" not in u]
+    existing_emails = [u for u in existing if "@" in u]
+    allow_all_default = 1 if (get_env_value("PINGRAM_ALLOW_ALL_USERS") or "").strip().lower() == "true" else 0
+    choice = prompt_choice(
+        "Who can message your agent?",
+        ["Limit to specific people (recommended)", "Allow anyone (not recommended)"],
+        allow_all_default,
     )
-    allowed: List[str] = []
-    for item in _parse_csv(answer):
-        if "@" in item:
-            allowed.append(_norm_email(item))
-        else:
-            normalized = _normalize_phone_e164(item)
-            if normalized:
-                allowed.append(normalized)
-    save_env_value("PINGRAM_ALLOWED_USERS", ",".join(allowed))
-    save_env_value("PINGRAM_ALLOW_ALL_USERS", "false")
-    if not allowed:
-        print_warning("No one allowlisted yet — Hermes will ignore inbound messages until you "
-                      "add allowed numbers/emails (PINGRAM_ALLOWED_USERS in ~/.hermes/.env).")
+
+    if choice == 1:
+        save_env_value("PINGRAM_ALLOW_ALL_USERS", "true")
+        save_env_value("PINGRAM_ALLOWED_USERS", "")
+        print_warning("Anyone who texts or emails your Pingram number/address can use the agent.")
+    else:
+        # Loop until at least one valid number or email is provided — we don't let
+        # the allowlist end up empty (that would block every inbound message).
+        allowed: List[str] = []
+        while True:
+            phones_raw = prompt(
+                "Which phone number(s) can text Hermes? (comma-separated, e.g. +15005005000)",
+                default=",".join(existing_phones),
+            )
+            emails_raw = prompt(
+                "Which email address(es) can message Hermes? (comma-separated, e.g. you@example.com)",
+                default=",".join(existing_emails),
+            )
+            allowed = []
+            for item in _parse_csv(phones_raw):
+                normalized = _normalize_phone_e164(item)
+                if normalized:
+                    allowed.append(normalized)
+            for item in _parse_csv(emails_raw):
+                if "@" in item:
+                    allowed.append(_norm_email(item))
+            if allowed:
+                break
+            print_warning("Please allowlist at least one phone number or email address.")
+        save_env_value("PINGRAM_ALLOWED_USERS", ",".join(allowed))
+        save_env_value("PINGRAM_ALLOW_ALL_USERS", "false")
 
     # Defaults applied without prompting (all editable via env vars):
     #   • Channels: both SMS + Email. This also gates platform enablement, so we
