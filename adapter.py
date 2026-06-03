@@ -432,6 +432,80 @@ def _fetch_account_identities(api_key: str, region: str) -> Tuple[List[str], Lis
         return [], []
 
 
+def _send_welcome_messages(
+    api_key: str,
+    region: str,
+    phones: List[str],
+    emails: List[str],
+    from_email: str = "",
+) -> Tuple[int, int]:
+    """Best-effort: send a friendly "hello" SMS/email to each allowlisted contact.
+
+    Run at the end of setup so the user immediately sees a real message from
+    their agent (and implicitly confirms the channels work). Returns the count
+    of ``(sms_sent, emails_sent)``. Any failure is swallowed — a welcome message
+    is a nicety, not something that should break setup.
+    """
+    if not (phones or emails):
+        return 0, 0
+
+    try:
+        import pingram  # noqa: F401
+    except ImportError:
+        if not _ensure_importable(_PINGRAM_IMPORT, _PINGRAM_PACKAGE):
+            return 0, 0
+
+    text = (
+        "Hey! This is your Hermes agent. I'm all set up and connected — "
+        "reply here anytime and I'll help you out."
+    )
+    subject = "Hey, this is your Hermes agent"
+
+    try:
+        from pingram import Pingram
+        from pingram.models.sender_post_body import SenderPostBody
+
+        async def _send_all() -> Tuple[int, int]:
+            sms_sent = 0
+            email_sent = 0
+            async with Pingram(api_key=api_key, region=region) as client:
+                for number in phones:
+                    body = {
+                        "type": DEFAULT_NOTIFICATION_TYPE,
+                        "to": {"id": number, "number": number},
+                        "sms": {"message": text},
+                    }
+                    try:
+                        await client.send(SenderPostBody.from_dict(body))
+                        sms_sent += 1
+                    except Exception:
+                        logger.debug("Pingram: welcome SMS to %s failed", number, exc_info=True)
+                for address in emails:
+                    email_block: Dict[str, Any] = {
+                        "subject": subject,
+                        "html": _text_to_html(text),
+                        "senderName": DEFAULT_FROM_NAME,
+                    }
+                    if from_email:
+                        email_block["senderEmail"] = from_email
+                    body = {
+                        "type": DEFAULT_NOTIFICATION_TYPE,
+                        "to": {"id": address, "email": address},
+                        "email": email_block,
+                    }
+                    try:
+                        await client.send(SenderPostBody.from_dict(body))
+                        email_sent += 1
+                    except Exception:
+                        logger.debug("Pingram: welcome email to %s failed", address, exc_info=True)
+            return sms_sent, email_sent
+
+        return asyncio.run(_send_all())
+    except Exception:
+        logger.debug("Pingram: welcome send failed", exc_info=True)
+        return 0, 0
+
+
 # ---------------------------------------------------------------------------
 # Adapter
 # ---------------------------------------------------------------------------
@@ -1230,53 +1304,38 @@ def interactive_setup() -> None:
     if account_emails and not (get_env_value("PINGRAM_FROM_EMAIL") or "").strip():
         save_env_value("PINGRAM_FROM_EMAIL", account_emails[0])
 
-    # Access control — the one safety-critical setting we still ask for. The user
-    # either limits access to specific senders (recommended) or opts into letting
-    # anyone who texts/emails the number run the agent. When limiting, we require
-    # at least one number or email so they're never silently locked out (an empty
+    # Access control — the one safety-critical setting we still ask for. We always
+    # build an explicit allowlist (never "allow anyone") and require at least one
+    # valid number or email so the user is never silently locked out (an empty
     # allowlist makes Hermes ignore everyone).
     print()
-    print_info("Access control limits who can message your agent.")
+    print_info("Tell Hermes who's allowed to reach it.")
     existing = _parse_csv(get_env_value("PINGRAM_ALLOWED_USERS") or "")
     existing_phones = [u for u in existing if "@" not in u]
     existing_emails = [u for u in existing if "@" in u]
-    allow_all_default = 1 if (get_env_value("PINGRAM_ALLOW_ALL_USERS") or "").strip().lower() == "true" else 0
-    choice = prompt_choice(
-        "Who can message your agent?",
-        ["Limit to specific people (recommended)", "Allow anyone (not recommended)"],
-        allow_all_default,
-    )
-
-    if choice == 1:
-        save_env_value("PINGRAM_ALLOW_ALL_USERS", "true")
-        save_env_value("PINGRAM_ALLOWED_USERS", "")
-        print_warning("Anyone who texts or emails your Pingram number/address can use the agent.")
-    else:
-        # Loop until at least one valid number or email is provided — we don't let
-        # the allowlist end up empty (that would block every inbound message).
-        allowed: List[str] = []
-        while True:
-            phones_raw = prompt(
-                "Which phone number(s) can text Hermes? (comma-separated, e.g. +15005005000)",
-                default=",".join(existing_phones),
-            )
-            emails_raw = prompt(
-                "Which email address(es) can message Hermes? (comma-separated, e.g. you@example.com)",
-                default=",".join(existing_emails),
-            )
-            allowed = []
-            for item in _parse_csv(phones_raw):
-                normalized = _normalize_phone_e164(item)
-                if normalized:
-                    allowed.append(normalized)
-            for item in _parse_csv(emails_raw):
-                if "@" in item:
-                    allowed.append(_norm_email(item))
-            if allowed:
-                break
-            print_warning("Please allowlist at least one phone number or email address.")
-        save_env_value("PINGRAM_ALLOWED_USERS", ",".join(allowed))
-        save_env_value("PINGRAM_ALLOW_ALL_USERS", "false")
+    allowed: List[str] = []
+    while True:
+        phones_raw = prompt(
+            "What is your phone number? (Who can text Hermes, e.g. +15005005000)",
+            default=",".join(existing_phones),
+        )
+        emails_raw = prompt(
+            "What is your email address? (Who can email Hermes, e.g. you@example.com)",
+            default=",".join(existing_emails),
+        )
+        allowed = []
+        for item in _parse_csv(phones_raw):
+            normalized = _normalize_phone_e164(item)
+            if normalized:
+                allowed.append(normalized)
+        for item in _parse_csv(emails_raw):
+            if "@" in item:
+                allowed.append(_norm_email(item))
+        if allowed:
+            break
+        print_warning("Please provide at least one phone number or email address.")
+    save_env_value("PINGRAM_ALLOWED_USERS", ",".join(allowed))
+    save_env_value("PINGRAM_ALLOW_ALL_USERS", "false")
 
     # Defaults applied without prompting (all editable via env vars):
     #   • Channels: both SMS + Email. This also gates platform enablement, so we
@@ -1306,6 +1365,30 @@ def interactive_setup() -> None:
         print(color(f"  📱 Number{'s' if len(account_numbers) > 1 else ''}:", Colors.BOLD, Colors.CYAN))
         for number in account_numbers:
             print(color(f"     ➜  {number}", Colors.BOLD, Colors.GREEN))
+
+    # Send a friendly hello to the first contact of each type we just allowlisted,
+    # so the user gets a real message from their agent right away and sees the
+    # channels work. Only the first number/email — not every allowlisted entry.
+    welcome_phones = [u for u in allowed if "@" not in u][:1]
+    welcome_emails = [u for u in allowed if "@" in u][:1]
+    print()
+    print_info("Sending you a hello from Hermes...")
+    sms_sent, email_sent = _send_welcome_messages(
+        api_key.strip(),
+        region,
+        welcome_phones,
+        welcome_emails,
+        from_email=(get_env_value("PINGRAM_FROM_EMAIL") or "").strip(),
+    )
+    if sms_sent or email_sent:
+        bits = []
+        if sms_sent:
+            bits.append(f"{sms_sent} text{'s' if sms_sent > 1 else ''}")
+        if email_sent:
+            bits.append(f"{email_sent} email{'s' if email_sent > 1 else ''}")
+        print(color(f"  💬 Sent {' and '.join(bits)} — check your phone/inbox!", Colors.BOLD, Colors.GREEN))
+    else:
+        print_warning("Couldn't send a welcome message just now — try messaging your agent once the gateway is running.")
 
 
 def register(ctx):
