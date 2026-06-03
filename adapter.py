@@ -6,6 +6,14 @@ over Pingram-managed **SMS** and **Email**.  One combined ``pingram`` platform
 serves both channels (Pingram uses one API key for both); the channel is encoded
 in the Hermes ``chat_id`` prefix (``sms:`` / ``email:``).
 
+chat_id shapes:
+  * SMS   — ``sms:<E.164-number>`` (the number is the recipient).
+  * Email — ``email:<recipient-address>#<thread-token>`` (or ``email:<address>``
+    when there's no thread token). The recipient is embedded directly so replies
+    — including cron/home-channel deliveries and replies after a restart — can be
+    addressed without relying on in-memory state, while ``#<thread-token>`` keeps
+    each email thread in its own Hermes session.
+
 Inbound messages are received by **polling** Pingram's logs API on a timer — no
 public endpoint or webhook registration is required.
 
@@ -28,7 +36,7 @@ Configuration (env vars override config.yaml ``extra``):
     PINGRAM_FROM_SMS           optional SMS sender number (E.164); blank -> Pingram
                                account default number
     PINGRAM_FROM_EMAIL         optional email sender address; blank -> Pingram default
-    PINGRAM_FROM_NAME          optional email sender display name; blank -> default
+    PINGRAM_FROM_NAME          email sender display name; always sent (default: Hermes)
     PINGRAM_ALLOWED_USERS      csv of phones/emails allowed to talk to the agent
     PINGRAM_ALLOW_ALL_USERS    true to allow everyone (dev only; default false)
     PINGRAM_NOTIFICATION_TYPE  Pingram notification `type` for replies
@@ -69,7 +77,8 @@ from gateway.config import Platform
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_NOTIFICATION_TYPE = "hermes_agent_reply"
+DEFAULT_NOTIFICATION_TYPE = "hermes_agent"
+DEFAULT_FROM_NAME = "Hermes"
 _DEDUP_TTL_SECONDS = 3600
 _DOWNLOAD_TIMEOUT = 30
 
@@ -118,6 +127,43 @@ def _parse_csv(value: Any) -> List[str]:
 def _norm_phone(value: Any) -> str:
     """Reduce a phone number to comparable digits."""
     return re.sub(r"\D", "", str(value or ""))
+
+
+def _normalize_phone_e164(raw: Any) -> str:
+    """Best-effort cleanup of a user-entered phone number into E.164 (``+digits``).
+
+    Tolerates the common "weird" formats people paste in:
+
+      * separators are stripped — ``(500) 500-5000``, ``500.500.5000``,
+        ``500 500 5000`` all collapse to digits;
+      * a leading international ``00`` prefix becomes ``+`` (``0015005005000`` ->
+        ``+15005005000``);
+      * an existing ``+`` is preserved;
+      * an 11-digit number starting with ``1`` gets a leading ``+``;
+      * a 10-digit (or shorter, e.g. 9-digit) number is assumed North American
+        and gets ``+1``;
+      * anything longer is assumed to already carry a country code and just
+        gets a ``+``.
+
+    Returns ``""`` for empty/garbage input so callers can treat it as "unset".
+    """
+    s = str(raw or "").strip()
+    if not s:
+        return ""
+    had_plus = s.startswith("+")
+    digits = re.sub(r"\D", "", s)
+    if not digits:
+        return ""
+    if digits.startswith("00"):  # international 00 prefix -> +
+        rest = digits[2:]
+        return "+" + rest if rest else ""
+    if had_plus:
+        return "+" + digits
+    if len(digits) == 11 and digits.startswith("1"):
+        return "+" + digits
+    if len(digits) <= 10:  # 10-digit US local, or shorter -> assume +1
+        return "+1" + digits
+    return "+" + digits  # already includes a country code
 
 
 def _norm_email(value: Any) -> str:
@@ -298,6 +344,94 @@ def _text_to_html(text: str) -> str:
     )
 
 
+# Characters allowed verbatim in the thread discriminator of an email chat_id.
+# Everything else (angle brackets, spaces, exotic punctuation) is collapsed to
+# keep the identifier compact and safe to use as a session/path key.
+_THREAD_TOKEN_KEEP = re.compile(r"[^A-Za-z0-9._@=+-]")
+
+
+def _sanitize_thread_token(token: Any) -> str:
+    """Reduce a raw email thread token (a Message-ID/References value) to a
+    compact, identifier-safe discriminator. Returns ``""`` for empty input."""
+    t = str(token or "").strip().strip("<>").strip()
+    if not t:
+        return ""
+    return _THREAD_TOKEN_KEEP.sub("_", t)[:120]
+
+
+def _email_chat_id(address: str, thread_token: Any) -> str:
+    """Build an email ``chat_id`` of the form ``email:<address>#<thread>``.
+
+    Embedding the recipient address directly in the chat_id means a reply can
+    be addressed without any in-memory state (so cron/home-channel delivery and
+    post-restart replies work), while the ``#<thread>`` discriminator keeps each
+    email thread in its own Hermes session. When there's no thread token, the
+    chat_id collapses to ``email:<address>``.
+    """
+    disc = _sanitize_thread_token(thread_token)
+    addr = _norm_email(address)
+    return f"email:{addr}#{disc}" if disc else f"email:{addr}"
+
+
+def _recipient_from_email_chat_id(chat_id: str) -> str:
+    """Extract the recipient address from an email chat_id.
+
+    Inverse of :func:`_email_chat_id`; also handles the legacy/plain
+    ``email:<address>`` form. Returns ``""`` if no address is present (e.g. a
+    thread-token-only legacy chat_id), so callers fall back to live context.
+    """
+    rest = chat_id[len("email:"):] if chat_id.startswith("email:") else chat_id
+    address = rest.split("#", 1)[0].strip()
+    return address if "@" in address else ""
+
+
+def _fetch_account_identities(api_key: str, region: str) -> Tuple[List[str], List[str]]:
+    """Best-effort: return ``(email_addresses, phone_numbers)`` for the account.
+
+    Queries Pingram's ``addresses.listAddresses`` and ``numbers.list`` so the
+    wizard can default the email sender to the account's first address and show
+    the user their agent's contact points. Each lookup is independent — one
+    failing still returns the other. Returns empty lists on any problem (SDK
+    unavailable, bad key, network/region error) so the wizard degrades quietly.
+    Also doubles as a light validation that the API key + region work.
+    """
+    try:
+        import pingram  # noqa: F401
+    except ImportError:
+        if not _ensure_importable(_PINGRAM_IMPORT, _PINGRAM_PACKAGE):
+            return [], []
+
+    try:
+        from pingram import Pingram
+
+        async def _query() -> Tuple[List[str], List[str]]:
+            emails: List[str] = []
+            numbers: List[str] = []
+            async with Pingram(api_key=api_key, region=region) as client:
+                try:
+                    resp = await client.addresses.addresses_list_addresses()
+                    for addr in getattr(resp, "addresses", None) or []:
+                        full = getattr(addr, "full_address", None)
+                        if full:
+                            emails.append(str(full).strip())
+                except Exception:
+                    logger.debug("Pingram: addresses.listAddresses failed", exc_info=True)
+                try:
+                    resp = await client.numbers.numbers_list()
+                    for num in getattr(resp, "numbers", None) or []:
+                        number = getattr(num, "phone_number", None)
+                        if number:
+                            numbers.append(str(number).strip())
+                except Exception:
+                    logger.debug("Pingram: numbers.list failed", exc_info=True)
+            return emails, numbers
+
+        return asyncio.run(_query())
+    except Exception:
+        logger.debug("Pingram: account identity lookup failed", exc_info=True)
+        return [], []
+
+
 # ---------------------------------------------------------------------------
 # Adapter
 # ---------------------------------------------------------------------------
@@ -323,9 +457,12 @@ class PingramAdapter(BasePlatformAdapter):
         # Sender identity is OPTIONAL on every channel — when left blank, Pingram
         # fills in the account default (a Pingram-managed number / sender). We
         # only send these fields when the user explicitly set them.
-        self.from_sms: str = str(cfg("PINGRAM_FROM_SMS", "from_sms", "")).strip()
+        self.from_sms: str = _normalize_phone_e164(cfg("PINGRAM_FROM_SMS", "from_sms", ""))
         self.from_email: str = _norm_email(cfg("PINGRAM_FROM_EMAIL", "from_email", ""))
-        self.from_name: str = str(cfg("PINGRAM_FROM_NAME", "from_name", "")).strip()
+        # Sender display name is always sent on emails; defaults to "Hermes" when
+        # the user leaves it blank (unlike the address/number, which fall back to
+        # Pingram's account defaults).
+        self.from_name: str = str(cfg("PINGRAM_FROM_NAME", "from_name", DEFAULT_FROM_NAME)).strip() or DEFAULT_FROM_NAME
 
         # Channels are an explicit choice (PINGRAM_CHANNELS), independent of
         # whether a sender is configured. Fall back to inferring from configured
@@ -359,7 +496,12 @@ class PingramAdapter(BasePlatformAdapter):
 
         self.allow_all: bool = _truthy(cfg("PINGRAM_ALLOW_ALL_USERS", "allow_all_users", False))
         allowed = _parse_csv(cfg("PINGRAM_ALLOWED_USERS", "allowed_users", ""))
-        self._allowed_phones: set = {_norm_phone(a) for a in allowed if "@" not in a}
+        # Normalize allowlisted phones to E.164 before reducing to comparable
+        # digits, so a hand-edited "5005005000" still matches an inbound
+        # "+15005005000" (both collapse to the same digits after +1 is added).
+        self._allowed_phones: set = {
+            _norm_phone(_normalize_phone_e164(a)) for a in allowed if "@" not in a
+        }
         self._allowed_emails: set = {_norm_email(a) for a in allowed if "@" in a}
 
         # Runtime state
@@ -437,7 +579,7 @@ class PingramAdapter(BasePlatformAdapter):
         if self.allow_all:
             return True
         if channel == "sms":
-            return _norm_phone(sender) in self._allowed_phones
+            return _norm_phone(_normalize_phone_e164(sender)) in self._allowed_phones
         return _norm_email(sender) in self._allowed_emails
 
     def _is_duplicate(self, key: str) -> bool:
@@ -649,8 +791,12 @@ class PingramAdapter(BasePlatformAdapter):
             return
         sender = _norm_email(payload.get("from", ""))
         subject = payload.get("subject") or ""
-        thread_key = self._email_thread_key(payload) or sender
-        chat_id = f"email:{thread_key}"
+        # The thread token (References root / In-Reply-To / Message-ID) is stable
+        # across a conversation, so the first message and its replies map to the
+        # same chat_id. The recipient address is embedded in the chat_id so we
+        # can address replies without relying on in-memory state.
+        thread_key = self._email_thread_key(payload)
+        chat_id = _email_chat_id(sender, thread_key)
         text = payload.get("bodyText") or self._html_to_text(payload.get("bodyHtml") or "")
 
         media_urls, media_types = self._collect_email_attachments(payload)
@@ -670,7 +816,7 @@ class PingramAdapter(BasePlatformAdapter):
             chat_type="dm",
             user_id=sender,
             user_name=payload.get("fromName") or _redact_user(sender),
-            thread_id=thread_key,
+            thread_id=thread_key or None,
         )
         event = MessageEvent(
             text=text,
@@ -777,11 +923,11 @@ class PingramAdapter(BasePlatformAdapter):
         if "email" not in self.channels:
             return SendResult(success=False, error="Email channel not configured")
         ctx = self._reply_ctx.get(chat_id)
-        to_email = (ctx or {}).get("to_email")
-        if not to_email:
-            # Fallback: treat the thread key itself as an address if it looks like one.
-            candidate = chat_id[len("email:"):]
-            to_email = candidate if "@" in candidate else None
+        # Prefer live context (it also carries subject + threading headers), but
+        # fall back to the address embedded in the chat_id. The latter is what
+        # makes cron/home-channel delivery and post-restart replies work without
+        # any persisted state.
+        to_email = (ctx or {}).get("to_email") or _recipient_from_email_chat_id(chat_id)
         if not to_email:
             return SendResult(success=False, error="No recipient email for thread")
 
@@ -790,10 +936,10 @@ class PingramAdapter(BasePlatformAdapter):
             subject = f"Re: {subject}"
 
         email_block: Dict[str, Any] = {"subject": subject, "html": _text_to_html(content)}
-        # Sender name/address are optional overrides — omit them and Pingram
-        # uses the account default (e.g. noreply@pingram.io).
-        if self.from_name:
-            email_block["senderName"] = self.from_name
+        # Sender display name is always sent (defaults to "Hermes"). The address
+        # is an optional override — omit it and Pingram uses the account default
+        # (e.g. noreply@pingram.io).
+        email_block["senderName"] = self.from_name or DEFAULT_FROM_NAME
         if self.from_email:
             email_block["senderEmail"] = self.from_email
         options: Optional[Dict[str, Any]] = None
@@ -1029,8 +1175,13 @@ def interactive_setup() -> None:
 
     Reached by selecting Pingram in the messaging-platforms menu. Lazy-imports
     the CLI prompt helpers so the plugin stays importable in non-CLI contexts
-    (gateway runtime, tests). Only the region, API key, and a channel choice are
-    required; sender identity is optional (Pingram supplies defaults).
+    (gateway runtime, tests).
+
+    Intentionally minimal: it asks only for the region, API key, and an access
+    allowlist (the one safety-critical setting). Everything else — channels
+    (defaults to SMS+Email), sender identity (Pingram defaults; display name
+    "Hermes"), and poll interval (15s) — uses defaults that remain editable via
+    env vars in ``~/.hermes/.env``.
     """
     from hermes_cli.setup import (
         prompt,
@@ -1048,9 +1199,9 @@ def interactive_setup() -> None:
     if get_env_value("PINGRAM_API_KEY") and not prompt_yes_no("Pingram is already configured. Reconfigure?", False):
         return
 
-    print_info("Chat with your Hermes agent over SMS and/or Email, routed through Pingram.")
-    print_info("You'll need a Pingram API key. Sender details are optional — Pingram")
-    print_info("uses sensible defaults when you leave them blank.")
+    print_info("Chat with your Hermes agent over SMS and Email, routed through Pingram.")
+    print_info("You just need your Pingram region and API key — everything else uses")
+    print_info("sensible defaults you can tweak later in ~/.hermes/.env.")
     print()
 
     # Region first — it selects the API endpoint, so it must match the account's
@@ -1059,7 +1210,7 @@ def interactive_setup() -> None:
     regions = ["us", "eu", "ca"]
     current_region = (get_env_value("PINGRAM_REGION") or "us").strip().lower()
     default_idx = regions.index(current_region) if current_region in regions else 0
-    region = regions[prompt_choice("Region", ["US", "EU", "CA"], default_idx)]
+    region = regions[prompt_choice("Region", ["US (Default)", "EU", "CA"], default_idx)]
     save_env_value("PINGRAM_REGION", region)
 
     api_key = prompt("Pingram API key (pingram_sk_...)", password=True)
@@ -1068,126 +1219,84 @@ def interactive_setup() -> None:
         return
     save_env_value("PINGRAM_API_KEY", api_key.strip())
 
-    # Channel selection drives everything else. Senders are optional per channel.
+    # Look up the account's configured email addresses + phone numbers once.
+    # Used to (a) default the email sender to the account's first verified
+    # address and (b) show the user their agent's contact points at the end.
+    # Best-effort — empty on failure, so the runtime falls back to defaults.
+    print_info("Checking your Pingram account...")
+    account_emails, account_numbers = _fetch_account_identities(api_key.strip(), region)
+    if account_emails and not (get_env_value("PINGRAM_FROM_EMAIL") or "").strip():
+        save_env_value("PINGRAM_FROM_EMAIL", account_emails[0])
+
+    # Access control — the one safety-critical setting we still ask for. An empty
+    # allowlist makes Hermes ignore everyone; "allow all" would let anyone who
+    # texts/emails run the agent. One combined prompt covers both channels.
     print()
-    print_info("Choose which channels your agent should use.")
-    existing_channels = {c for c in _parse_csv(get_env_value("PINGRAM_CHANNELS") or "") if c in {"sms", "email"}}
-    channel_options = ["SMS only", "Email only", "Both SMS and Email"]
-    if existing_channels == {"sms"}:
-        channel_default = 0
-    elif existing_channels == {"email"}:
-        channel_default = 1
-    elif existing_channels == {"sms", "email"}:
-        channel_default = 2
-    else:
-        channel_default = 2
-    channel_idx = prompt_choice("Which channels do you want to enable?", channel_options, channel_default)
-    channels = {0: {"sms"}, 1: {"email"}, 2: {"sms", "email"}}[channel_idx]
-    save_env_value("PINGRAM_CHANNELS", ",".join(sorted(channels)))
-
-    # SMS sender — default Pingram number, or a specific verified number.
-    if "sms" in channels:
-        print()
-        print_info("SMS sender number (the 'from' your texts come from).")
-        existing_sms = (get_env_value("PINGRAM_FROM_SMS") or "").strip()
-        sms_sender_idx = prompt_choice(
-            "Which number should send your SMS replies?",
-            [
-                "Use my Pingram account's default number (recommended)",
-                "Use a specific number from my Pingram account",
-            ],
-            1 if existing_sms else 0,
-        )
-        if sms_sender_idx == 1:
-            sms_from = prompt(
-                "Pingram sender number (E.164, e.g. +15551234567)",
-                default=existing_sms,
-            )
-            save_env_value("PINGRAM_FROM_SMS", sms_from.strip())
-            if not sms_from.strip():
-                print_info("Left blank — Pingram will use your account's default number.")
-        else:
-            save_env_value("PINGRAM_FROM_SMS", "")
-    else:
-        save_env_value("PINGRAM_FROM_SMS", "")
-
-    # Email sender identity — both fields optional; blank uses Pingram defaults.
-    if "email" in channels:
-        print()
-        print_info("Email sender identity. Both fields are optional — leave them blank to")
-        print_info("use Pingram's defaults.")
-        from_name = prompt(
-            'Sender display name (e.g. "My Bot") — blank for default (Pingram)',
-            default=get_env_value("PINGRAM_FROM_NAME") or "",
-        )
-        save_env_value("PINGRAM_FROM_NAME", from_name.strip())
-        from_email = prompt(
-            "Sender email address (e.g. noreply@yourdomain.com) — blank for default (noreply@pingram.io)",
-            default=get_env_value("PINGRAM_FROM_EMAIL") or "",
-        )
-        save_env_value("PINGRAM_FROM_EMAIL", from_email.strip())
-    else:
-        save_env_value("PINGRAM_FROM_NAME", "")
-        save_env_value("PINGRAM_FROM_EMAIL", "")
-
-    # Access control.
-    print()
-    print_info("Access control: restrict who can talk to the agent.")
-    if prompt_yes_no("Allow ALL users to message the agent? (dev only)", False):
-        save_env_value("PINGRAM_ALLOW_ALL_USERS", "true")
-        save_env_value("PINGRAM_ALLOWED_USERS", "")
-        print_warning("Open access — anyone who texts/emails your address can use the agent.")
-    else:
-        save_env_value("PINGRAM_ALLOW_ALL_USERS", "false")
-        # One allowlist env var, but ask per enabled channel so the prompts only
-        # cover what's relevant (phones for SMS, emails for Email).
-        existing = _parse_csv(get_env_value("PINGRAM_ALLOWED_USERS") or "")
-        existing_phones = ",".join(u for u in existing if "@" not in u)
-        existing_emails = ",".join(u for u in existing if "@" in u)
-        allowed: List[str] = []
-        if "sms" in channels:
-            phones = prompt(
-                "Allowed phone numbers for SMS (comma-separated, E.164)",
-                default=existing_phones,
-            )
-            allowed += _parse_csv(phones)
-        if "email" in channels:
-            emails = prompt(
-                "Allowed email addresses for Email (comma-separated)",
-                default=existing_emails,
-            )
-            allowed += _parse_csv(emails)
-        save_env_value("PINGRAM_ALLOWED_USERS", ",".join(allowed))
-        if not allowed:
-            print_warning("No users allowlisted — inbound messages will be ignored until you add some.")
-
-    # Inbound polling cadence. Hermes pulls new messages from Pingram on a timer;
-    # there's no public endpoint or webhook to configure.
-    print()
-    print_info("Hermes receives incoming messages by polling Pingram (no public URL needed).")
-    interval = prompt(
-        "Seconds between polls",
-        default=get_env_value("PINGRAM_POLL_INTERVAL") or str(DEFAULT_POLL_INTERVAL),
+    print_info("Access control: who is allowed to message your agent?")
+    existing = _parse_csv(get_env_value("PINGRAM_ALLOWED_USERS") or "")
+    answer = prompt(
+        "What numbers and emails can message Hermes? "
+        "(comma-separated, e.g. +15005005000, you@example.com)",
+        default=",".join(existing),
     )
-    save_env_value("PINGRAM_POLL_INTERVAL", interval.strip() or str(DEFAULT_POLL_INTERVAL))
-    if "email" in channels:
-        print_warning("Note: inbound email attachments are not downloaded when polling "
-                      "(SMS/MMS images still work).")
+    allowed: List[str] = []
+    for item in _parse_csv(answer):
+        if "@" in item:
+            allowed.append(_norm_email(item))
+        else:
+            normalized = _normalize_phone_e164(item)
+            if normalized:
+                allowed.append(normalized)
+    save_env_value("PINGRAM_ALLOWED_USERS", ",".join(allowed))
+    save_env_value("PINGRAM_ALLOW_ALL_USERS", "false")
+    if not allowed:
+        print_warning("No one allowlisted yet — Hermes will ignore inbound messages until you "
+                      "add allowed numbers/emails (PINGRAM_ALLOWED_USERS in ~/.hermes/.env).")
+
+    # Defaults applied without prompting (all editable via env vars):
+    #   • Channels: both SMS + Email. This also gates platform enablement, so we
+    #     must persist it; only set when unset to preserve an existing choice.
+    #   • Sender name "Hermes", default sender number/address, and a 15s poll
+    #     interval are applied at runtime, so they need no env entry here.
+    if not get_env_value("PINGRAM_CHANNELS"):
+        save_env_value("PINGRAM_CHANNELS", "sms,email")
 
     print()
     print_success("Pingram configured!")
+
+    # Show the user how to reach their agent. The first email is the one we set
+    # as the default sender; numbers are display-only (we leave PINGRAM_FROM_SMS
+    # on Pingram's account default rather than picking from this list).
+    if account_emails:
+        print()
+        print_info(f"Your agent's email address{'es' if len(account_emails) > 1 else ''}:")
+        for i, addr in enumerate(account_emails):
+            print_info(f"  • {addr}{'   [default]' if i == 0 else ''}")
+    if account_numbers:
+        print()
+        print_info(f"Your agent's number{'s' if len(account_numbers) > 1 else ''}:")
+        for number in account_numbers:
+            print_info(f"  • {number}")
+
+    print()
     print_info("Next steps:")
     print_info("  1. Start the gateway: hermes gateway")
-    print_info(f"  2. That's it — Hermes polls Pingram every {interval.strip() or DEFAULT_POLL_INTERVAL}s "
-               "for new messages.")
-    print_info("     No public URL or webhook subscription required.")
+    print_info("  2. Text or email your Pingram number/address to chat — Hermes polls every "
+               f"{DEFAULT_POLL_INTERVAL}s for new messages.")
+    print()
+    print_info("Defaults applied (edit ~/.hermes/.env to change):")
+    print_info("  • Channels: SMS + Email                  (PINGRAM_CHANNELS)")
+    print_info(f"  • Sender name: {DEFAULT_FROM_NAME}                     (PINGRAM_FROM_NAME)")
+    print_info("  • Sender number: Pingram account default (PINGRAM_FROM_SMS)")
+    print_info("  • Sender email: your account's address   (PINGRAM_FROM_EMAIL)")
+    print_info(f"  • Poll interval: {DEFAULT_POLL_INTERVAL}s                     (PINGRAM_POLL_INTERVAL)")
 
 
 def register(ctx):
     """Plugin entry point: called by the Hermes plugin system."""
     ctx.register_platform(
         name="pingram",
-        label="Pingram",
+        label="Pingram (SMS, Email, Voice)",
         adapter_factory=lambda cfg: PingramAdapter(cfg),
         check_fn=check_requirements,
         validate_config=validate_config,
@@ -1198,6 +1307,10 @@ def register(ctx):
         setup_fn=interactive_setup,
         allowed_users_env="PINGRAM_ALLOWED_USERS",
         allow_all_env="PINGRAM_ALLOW_ALL_USERS",
+        # Makes ``pingram`` a valid cron/home-channel delivery target. The chat
+        # set via /sethome is stored here; for email it embeds the recipient
+        # address (see _email_chat_id) so delivery survives restarts.
+        cron_deliver_env_var="PINGRAM_HOME_CHANNEL",
         emoji="📨",
         pii_safe=True,
         allow_update_command=True,

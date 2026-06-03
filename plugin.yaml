@@ -32,8 +32,8 @@ optional_env:
     prompt: "Email sender address (optional)"
     password: false
   - name: PINGRAM_FROM_NAME
-    description: "Optional. Email sender display name (e.g. \"My Bot\"). Leave empty to use Pingram's default. Applies to the Email channel only."
-    prompt: "Email sender display name (optional)"
+    description: "Email sender display name (e.g. \"Hermes\"). Always sent on outgoing emails; defaults to \"Hermes\" when unset. Applies to the Email channel only."
+    prompt: "Email sender display name"
     password: false
   - name: PINGRAM_POLL_INTERVAL
     description: "Seconds between polls of Pingram's logs API for new inbound messages (default: 15)."
