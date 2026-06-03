@@ -506,6 +506,47 @@ def _send_welcome_messages(
         return 0, 0
 
 
+# Gateway display tier for Pingram. SMS/email are asynchronous channels where
+# the agent's mid-turn narration (interim messages, tool progress, busy acks)
+# turns into a flood of separate texts/emails. Hermes already ships a minimal
+# tier for its built-in "email"/"sms" platforms, but a custom platform key like
+# "pingram" doesn't inherit it, so we seed the same quiet behavior here. We keep
+# long-running notifications ON so a slow turn still sends a periodic heartbeat
+# rather than going silent.
+_PINGRAM_DISPLAY_OVERRIDES: Dict[str, Any] = {
+    "interim_assistant_messages": False,
+    "tool_progress": "off",
+    "streaming": False,
+    "busy_ack_detail": False,
+    "long_running_notifications": True,
+}
+
+
+def _seed_display_overrides(load_config, save_config) -> None:
+    """Write ``display.platforms.pingram`` verbosity defaults into config.yaml.
+
+    Only fills in keys that aren't already present, so a user who has tuned
+    their own overrides is never clobbered. Best-effort — a config write failure
+    shouldn't break setup.
+    """
+    try:
+        config = load_config()
+        display = config.setdefault("display", {})
+        platforms = display.setdefault("platforms", {})
+        pingram_cfg = platforms.setdefault("pingram", {})
+        if not isinstance(pingram_cfg, dict):
+            return
+        changed = False
+        for key, value in _PINGRAM_DISPLAY_OVERRIDES.items():
+            if key not in pingram_cfg:
+                pingram_cfg[key] = value
+                changed = True
+        if changed:
+            save_config(config)
+    except Exception:
+        logger.debug("Pingram: failed to seed display overrides", exc_info=True)
+
+
 # ---------------------------------------------------------------------------
 # Adapter
 # ---------------------------------------------------------------------------
@@ -1269,6 +1310,8 @@ def interactive_setup() -> None:
         print_success,
         color,
         Colors,
+        load_config,
+        save_config,
     )
 
     print_header("Pingram")
@@ -1316,11 +1359,11 @@ def interactive_setup() -> None:
     allowed: List[str] = []
     while True:
         phones_raw = prompt(
-            "What is your phone number? (Who can text Hermes, e.g. +15005005000)",
+            "What is your phone number? E.g. +15005005000",
             default=",".join(existing_phones),
         )
         emails_raw = prompt(
-            "What is your email address? (Who can email Hermes, e.g. you@example.com)",
+            "What is your email address?",
             default=",".join(existing_emails),
         )
         allowed = []
@@ -1344,6 +1387,12 @@ def interactive_setup() -> None:
     #     interval are applied at runtime, so they need no env entry here.
     if not get_env_value("PINGRAM_CHANNELS"):
         save_env_value("PINGRAM_CHANNELS", "sms,email")
+
+    # Tune gateway verbosity so SMS/email don't get spammed with the agent's
+    # mid-turn narration — these are asynchronous, high-friction channels where
+    # only the final answer belongs. Keeps long-running heartbeats on so slow
+    # turns still send a "still working" ping instead of going silent.
+    _seed_display_overrides(load_config, save_config)
 
     print()
     print_success("Pingram configured!")
