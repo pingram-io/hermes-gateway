@@ -1193,6 +1193,8 @@ def interactive_setup() -> None:
         print_info,
         print_warning,
         print_success,
+        color,
+        Colors,
     )
 
     print_header("Pingram")
@@ -1287,32 +1289,23 @@ def interactive_setup() -> None:
     print()
     print_success("Pingram configured!")
 
-    # Show the user how to reach their agent. The first email is the one we set
-    # as the default sender; numbers are display-only (we leave PINGRAM_FROM_SMS
-    # on Pingram's account default rather than picking from this list).
+    # Show the user how to reach their agent — rendered bright so the contact
+    # points stand out as the key takeaway. The first email is the one we set as
+    # the default sender; numbers are display-only (we leave PINGRAM_FROM_SMS on
+    # Pingram's account default rather than picking from this list).
+    if account_emails or account_numbers:
+        print()
+        print(color("  ✨ Your agent is reachable at:", Colors.BOLD, Colors.MAGENTA))
     if account_emails:
         print()
-        print_info(f"Your agent's email address{'es' if len(account_emails) > 1 else ''}:")
-        for i, addr in enumerate(account_emails):
-            print_info(f"  • {addr}{'   [default]' if i == 0 else ''}")
+        print(color(f"  📧 Email address{'es' if len(account_emails) > 1 else ''}:", Colors.BOLD, Colors.CYAN))
+        for addr in account_emails:
+            print(color(f"     ➜  {addr}", Colors.BOLD, Colors.GREEN))
     if account_numbers:
         print()
-        print_info(f"Your agent's number{'s' if len(account_numbers) > 1 else ''}:")
+        print(color(f"  📱 Number{'s' if len(account_numbers) > 1 else ''}:", Colors.BOLD, Colors.CYAN))
         for number in account_numbers:
-            print_info(f"  • {number}")
-
-    print()
-    print_info("Next steps:")
-    print_info("  1. Start the gateway: hermes gateway")
-    print_info("  2. Text or email your Pingram number/address to chat — Hermes polls every "
-               f"{DEFAULT_POLL_INTERVAL}s for new messages.")
-    print()
-    print_info("Defaults applied (edit ~/.hermes/.env to change):")
-    print_info("  • Channels: SMS + Email                  (PINGRAM_CHANNELS)")
-    print_info(f"  • Sender name: {DEFAULT_FROM_NAME}                     (PINGRAM_FROM_NAME)")
-    print_info("  • Sender number: Pingram account default (PINGRAM_FROM_SMS)")
-    print_info("  • Sender email: your account's address   (PINGRAM_FROM_EMAIL)")
-    print_info(f"  • Poll interval: {DEFAULT_POLL_INTERVAL}s                     (PINGRAM_POLL_INTERVAL)")
+            print(color(f"     ➜  {number}", Colors.BOLD, Colors.GREEN))
 
 
 def register(ctx):
