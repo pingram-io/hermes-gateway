@@ -22,7 +22,8 @@ classifiers = [
 ]
 dependencies = [
   # Pingram Python SDK — distribution is `pingram-python`, imported as `pingram`.
-  "pingram-python>=1.0.7",
+  # >=1.0.10 adds the `sharedNumber` field on the list-numbers response.
+  "pingram-python>=1.0.10",
   "aiohttp>=3.9",
 ]
 

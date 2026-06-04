@@ -390,10 +390,11 @@ def _fetch_account_identities(api_key: str, region: str) -> Tuple[List[str], Lis
 
     Queries Pingram's ``addresses.listAddresses`` and ``numbers.list`` so the
     wizard can default the email sender to the account's first address and show
-    the user their agent's contact points. Each lookup is independent — one
-    failing still returns the other. Returns empty lists on any problem (SDK
-    unavailable, bad key, network/region error) so the wizard degrades quietly.
-    Also doubles as a light validation that the API key + region work.
+    the user their agent's contact points. When the account has no dedicated
+    numbers, it falls back to the response's ``sharedNumber``. Each lookup is
+    independent — one failing still returns the other. Returns empty lists on any
+    problem (SDK unavailable, bad key, network/region error) so the wizard
+    degrades quietly. Also doubles as light validation that the key + region work.
     """
     try:
         import pingram  # noqa: F401
@@ -422,6 +423,13 @@ def _fetch_account_identities(api_key: str, region: str) -> Tuple[List[str], Lis
                         number = getattr(num, "phone_number", None)
                         if number:
                             numbers.append(str(number).strip())
+                    # Fall back to the account's shared number when no dedicated
+                    # numbers are provisioned (pingram-python >=1.0.10 exposes
+                    # `sharedNumber` / `shared_number` on the response).
+                    if not numbers:
+                        shared = getattr(resp, "shared_number", None)
+                        if shared:
+                            numbers.append(str(shared).strip())
                 except Exception:
                     logger.debug("Pingram: numbers.list failed", exc_info=True)
             return emails, numbers
