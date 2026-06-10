@@ -3,7 +3,12 @@
 from pingram_gateway.core.constants import DEFAULT_FROM_NAME, PLATFORM_EMAIL
 from pingram_gateway.core.helpers import norm_email, parse_csv
 from pingram_gateway.core.send import fetch_account_identities, send_welcome_email
-from pingram_gateway.core.setup_common import enable_gateway_platform, prompt_region_and_api_key, seed_display_overrides
+from pingram_gateway.core.setup_common import (
+    enable_gateway_platform,
+    email_platform_configured,
+    prompt_region_and_api_key,
+    seed_display_overrides,
+)
 
 
 def setup_email() -> None:
@@ -16,9 +21,13 @@ def setup_email() -> None:
         print_success,
         print_warning,
         prompt,
+        prompt_yes_no,
         save_config,
         save_env_value,
     )
+
+    if email_platform_configured() and not prompt_yes_no("Pingram Email is already configured. Reconfigure?", False):
+        return
 
     region, api_key = prompt_region_and_api_key(header="Pingram Email")
     if not region or not api_key:

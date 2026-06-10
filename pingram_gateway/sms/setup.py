@@ -3,7 +3,12 @@
 from pingram_gateway.core.constants import PLATFORM_SMS
 from pingram_gateway.core.helpers import normalize_phone_e164, parse_csv
 from pingram_gateway.core.send import fetch_account_identities, send_welcome_sms
-from pingram_gateway.core.setup_common import enable_gateway_platform, prompt_region_and_api_key, seed_display_overrides
+from pingram_gateway.core.setup_common import (
+    enable_gateway_platform,
+    prompt_region_and_api_key,
+    seed_display_overrides,
+    sms_platform_configured,
+)
 
 
 def setup_sms() -> None:
@@ -16,9 +21,13 @@ def setup_sms() -> None:
         print_success,
         print_warning,
         prompt,
+        prompt_yes_no,
         save_config,
         save_env_value,
     )
+
+    if sms_platform_configured() and not prompt_yes_no("Pingram SMS is already configured. Reconfigure?", False):
+        return
 
     region, api_key = prompt_region_and_api_key(header="Pingram SMS")
     if not region or not api_key:

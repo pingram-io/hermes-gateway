@@ -8,6 +8,30 @@ from pingram_gateway.core.constants import DISPLAY_OVERRIDES
 logger = logging.getLogger(__name__)
 
 
+def _empty_platform_config():
+    from gateway.config import PlatformConfig
+
+    return PlatformConfig(enabled=True)
+
+
+def sms_platform_configured() -> bool:
+    from pingram_gateway.core.config import sms_configured
+
+    return sms_configured(_empty_platform_config())
+
+
+def email_platform_configured() -> bool:
+    from pingram_gateway.core.config import email_configured
+
+    return email_configured(_empty_platform_config())
+
+
+def shared_credentials_configured() -> bool:
+    from hermes_cli.setup import get_env_value
+
+    return bool((get_env_value("PINGRAM_API_KEY") or "").strip())
+
+
 def prompt_region_and_api_key(*, header: str, reconfigure_default: bool = False) -> Tuple[Optional[str], Optional[str]]:
     from hermes_cli.setup import (
         get_env_value,
@@ -21,12 +45,13 @@ def prompt_region_and_api_key(*, header: str, reconfigure_default: bool = False)
     )
 
     print_header(header)
-    if get_env_value("PINGRAM_API_KEY") and not prompt_yes_no(
-        f"{header} is already configured. Reconfigure shared Pingram settings?", reconfigure_default
-    ):
-        api_key = (get_env_value("PINGRAM_API_KEY") or "").strip()
-        region = (get_env_value("PINGRAM_REGION") or "us").strip().lower()
-        return region, api_key
+
+    if shared_credentials_configured():
+        print_info("Shared Pingram region and API key are already set.")
+        if not prompt_yes_no("  Reconfigure region and API key?", reconfigure_default):
+            api_key = (get_env_value("PINGRAM_API_KEY") or "").strip()
+            region = (get_env_value("PINGRAM_REGION") or "us").strip().lower()
+            return region, api_key
 
     print_info("You need your Pingram region and API key — other settings use sensible defaults.")
     print()
