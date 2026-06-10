@@ -52,13 +52,6 @@ def setup_email() -> None:
     if account_emails and not (get_env_value("PINGRAM_FROM_EMAIL") or "").strip():
         save_env_value("PINGRAM_FROM_EMAIL", account_emails[0])
 
-    from_name = prompt(
-        "Email sender display name",
-        default=get_env_value("PINGRAM_FROM_NAME") or DEFAULT_FROM_NAME,
-    )
-    if from_name.strip():
-        save_env_value("PINGRAM_FROM_NAME", from_name.strip())
-
     seed_display_overrides(load_config, save_config, PLATFORM_EMAIL)
     enable_gateway_platform(load_config, save_config, PLATFORM_EMAIL)
 
