@@ -73,6 +73,15 @@ def coerce_send_target(target: str) -> str:
     return target
 
 
+def _ensure_plugin_platforms_discovered() -> None:
+    try:
+        from hermes_cli.plugins import discover_plugins
+
+        discover_plugins()
+    except Exception:
+        pass
+
+
 def install_send_message_parsers() -> None:
     try:
         import tools.send_message_tool as smt
@@ -99,6 +108,7 @@ def install_send_message_parsers() -> None:
         return original_parse(platform_name, target_ref)
 
     def _handle_list():
+        _ensure_plugin_platforms_discovered()
         try:
             from gateway.channel_directory import format_directory_for_display
             from gateway.config import load_gateway_config
@@ -117,6 +127,7 @@ def install_send_message_parsers() -> None:
             return original_list() if callable(original_list) else json.dumps({"error": str(exc)})
 
     def _handle_send(args):
+        _ensure_plugin_platforms_discovered()
         args = dict(args or {})
         target = str(args.get("target", "") or "")
         if target:
@@ -148,7 +159,6 @@ def install_send_message_parsers() -> None:
     smt._parse_target_ref = _parse_target_ref
     smt._handle_send = _handle_send
     smt._handle_list = _handle_list
-    smt._send_via_adapter = _send_via_adapter
     smt._pingram_split_target_parser_installed = True
 
 

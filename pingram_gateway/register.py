@@ -77,8 +77,6 @@ def _email_env_enablement():
 
 def register(ctx):
     """Plugin entry point."""
-    install_send_message_parsers()
-
     ctx.register_platform(
         name=PLATFORM_SMS,
         label="Pingram SMS",
@@ -137,3 +135,5 @@ def register(ctx):
         allow_update_command=False,
         platform_hint=VOICE_HINT,
     )
+
+    install_send_message_parsers()
