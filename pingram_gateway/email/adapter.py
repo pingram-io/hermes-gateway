@@ -34,11 +34,11 @@ from pingram_gateway.core.helpers import (
     parse_sender_email,
     recipient_from_email_chat_id,
     redact_user,
-    text_to_html,
 )
 from pingram_gateway.core.directory import seed_platform_directory
 from pingram_gateway.core.poll import PingramPollCoordinator
 from pingram_gateway.core.send import pingram_send
+from pingram_gateway.email.body_html import email_body_to_html
 from pingram_gateway.email.subject import resolve_outbound_subject
 
 logger = logging.getLogger(__name__)
@@ -190,7 +190,7 @@ class PingramEmailAdapter(BasePlatformAdapter):
         if not to_email:
             return SendResult(success=False, error="No recipient email for thread")
         subject, body = resolve_outbound_subject(content, ctx, explicit_subject=explicit_subject)
-        email_block: Dict[str, Any] = {"subject": subject, "html": text_to_html(body), "senderName": self.from_name}
+        email_block: Dict[str, Any] = {"subject": subject, "html": email_body_to_html(body), "senderName": self.from_name}
         if self.from_email:
             email_block["senderEmail"] = self.from_email
         body: Dict[str, Any] = {

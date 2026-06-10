@@ -175,5 +175,12 @@ def _extend_send_message_schema(smt) -> None:
         smt.SEND_MESSAGE_SCHEMA["description"] = (
             description.rstrip()
             + "\n\nFor proactive pingram-email sends, always provide a concise, "
-            "descriptive subject parameter."
+            "descriptive subject parameter and write message as HTML (e.g. <p>, "
+            "<strong>, <ul>/<li>) — not markdown."
         )
+    message_desc = props.get("message", {}).get("description") or ""
+    if "HTML" not in message_desc and "pingram-email" not in message_desc:
+        props["message"]["description"] = (
+            message_desc.rstrip()
+            + " For pingram-email, use HTML fragments in message — not markdown."
+        ).strip()

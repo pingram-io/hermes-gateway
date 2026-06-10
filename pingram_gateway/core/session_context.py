@@ -50,7 +50,8 @@ def build_cli_delivery_note(context) -> str:
     if has_email:
         lines.append(
             '- Email: send_message(target="pingram-email", subject="Short descriptive subject", '
-            'message="...") — always set subject on new threads; do not prefix with "Re:" proactively.'
+            'message="<p>...</p>") — write message as HTML (not markdown); always set subject on '
+            'new threads; do not prefix with "Re:" proactively.'
         )
     lines.append(
         "- Do not load or use the himalaya skill for outbound delivery when Pingram is configured."
