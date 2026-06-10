@@ -118,7 +118,7 @@ def register(ctx):
 
     ctx.register_platform(
         name=PLATFORM_VOICE,
-        label="Pingram Voice (Alpha)",
+        label="Pingram Voice",
         adapter_factory=lambda cfg: PingramVoiceStubAdapter(cfg),
         check_fn=lambda: True,
         validate_config=lambda _cfg: False,

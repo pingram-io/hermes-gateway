@@ -38,13 +38,6 @@ def setup_sms() -> None:
     save_env_value("PINGRAM_SMS_HOME_CHANNEL", phone)
     save_env_value("PINGRAM_ALLOW_ALL_USERS", "false")
 
-    from_sms = prompt(
-        "Optional: pin a specific Pingram sender number (leave blank for account default)",
-        default=get_env_value("PINGRAM_FROM_SMS") or "",
-    )
-    if from_sms.strip():
-        save_env_value("PINGRAM_FROM_SMS", normalize_phone_e164(from_sms))
-
     print_info("Checking your Pingram account...")
     _emails, numbers = fetch_account_identities(api_key, region)
 
