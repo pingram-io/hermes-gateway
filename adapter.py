@@ -409,6 +409,8 @@ def _normalize_outbound_chat_id(chat_id: str) -> str:
     if normalized:
         return f"sms:{normalized}"
     return raw
+
+
 def _fetch_account_identities(api_key: str, region: str) -> Tuple[List[str], List[str]]:
     """Best-effort: return ``(email_addresses, phone_numbers)`` for the account.
 
@@ -1281,7 +1283,8 @@ async def _standalone_send(
         return {
             "error": (
                 "Pingram standalone send: no recipient. Specify a target like "
-                "'pingram:sms:+15005005000' or set PINGRAM_HOME_CHANNEL."
+                "'pingram:sms:+15005005000' or 'pingram:email:you@example.com' or set "
+                "PINGRAM_HOME_CHANNEL."
             )
         }
 
@@ -1342,6 +1345,43 @@ async def _standalone_send(
             "message_id": result.message_id,
         }
     return {"error": result.error or "Pingram send failed"}
+
+
+def _parse_pingram_target_ref(target_ref: str) -> Optional[Tuple[str, None, bool]]:
+    """Parse a Pingram ``send_message`` target into an explicit chat_id."""
+    chat_id = _normalize_outbound_chat_id((target_ref or "").strip())
+    if chat_id.startswith("sms:") or chat_id.startswith("email:"):
+        return chat_id, None, True
+    return None
+
+
+def _install_send_message_target_parser() -> None:
+    """Teach Hermes' ``send_message`` tool how to parse Pingram targets.
+
+    Core ``_parse_target_ref`` only treats signal/sms/whatsapp as phone platforms
+    and has no Pingram-specific rules, so ``pingram:user@example.com`` fails
+    channel-directory resolution before our standalone sender runs. Patch once
+    at plugin registration so bare emails, E.164 numbers, and ``sms:`` /
+    ``email:`` prefixes all resolve correctly.
+    """
+    try:
+        import tools.send_message_tool as smt
+    except ImportError:
+        return
+    if getattr(smt, "_pingram_target_parser_installed", False):
+        return
+
+    original = smt._parse_target_ref
+
+    def _parse_target_ref(platform_name: str, target_ref: str):
+        if platform_name == "pingram":
+            parsed = _parse_pingram_target_ref(target_ref)
+            if parsed is not None:
+                return parsed
+        return original(platform_name, target_ref)
+
+    smt._parse_target_ref = _parse_target_ref
+    smt._pingram_target_parser_installed = True
 
 
 # ---------------------------------------------------------------------------
@@ -1608,6 +1648,7 @@ def interactive_setup() -> None:
 
 def register(ctx):
     """Plugin entry point: called by the Hermes plugin system."""
+    _install_send_message_target_parser()
     ctx.register_platform(
         name="pingram",
         label="Pingram (SMS, Email, Voice)",
@@ -1638,6 +1679,12 @@ def register(ctx):
             "~160-character segments), and avoid links where possible. For Email, a "
             "subject and light HTML are fine; replies are threaded as 'Re:'. "
             "Inbound MMS images are provided to you as media (inbound email "
-            "attachments are not available)."
+            "attachments are not available). "
+            "When using send_message to reach someone on Pingram: use target "
+            "'pingram' to deliver to the configured home channel (PINGRAM_HOME_CHANNEL); "
+            "or 'pingram:+15551234567' / 'pingram:user@example.com' / "
+            "'pingram:sms:+15551234567' / 'pingram:email:user@example.com'. "
+            "You can proactively text or email users — Pingram is not limited to "
+            "replying to existing threads."
         ),
     )
