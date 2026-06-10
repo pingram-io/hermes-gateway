@@ -56,6 +56,7 @@ logs API returns attachment metadata only). Inbound SMS/MMS images work fully.
 import asyncio
 import base64
 import datetime
+import email.utils
 import html as html_lib
 import logging
 import os
@@ -170,6 +171,71 @@ def _normalize_phone_e164(raw: Any) -> str:
 
 def _norm_email(value: Any) -> str:
     return str(value or "").strip().lower()
+
+
+_MIN_SMS_DIGITS = 10
+
+
+def _is_plausible_sms_number(raw: Any) -> bool:
+    """True when ``raw`` normalizes to a real-looking E.164 number."""
+    normalized = _normalize_phone_e164(raw)
+    return len(_norm_phone(normalized)) >= _MIN_SMS_DIGITS
+
+
+def _is_routing_or_message_id_address(addr: str) -> bool:
+    """Detect Gmail routing / Message-ID addresses that are not reply targets."""
+    addr = _norm_email(addr)
+    if not addr or "@" not in addr:
+        return True
+    local, _, domain = addr.partition("@")
+    if domain in {"mail.gmail.com", "mail.google.com"}:
+        if local.startswith(("ca+", "cac", "bounce", "btdp")):
+            return True
+    if local.startswith("<") or local.endswith(">"):
+        return True
+    return False
+
+
+def _is_deliverable_email(addr: str) -> bool:
+    addr = _norm_email(addr)
+    if not addr or "@" not in addr or _is_routing_or_message_id_address(addr):
+        return False
+    local, _, domain = addr.rpartition("@")
+    return bool(local and domain and "." in domain)
+
+
+def _parse_sender_email(raw: Any) -> str:
+    """Extract a deliverable address from an inbound email From header/value."""
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+    _display, addr = email.utils.parseaddr(text)
+    addr = _norm_email(addr)
+    return addr if _is_deliverable_email(addr) else ""
+
+
+def _looks_like_pingram_directory_label(ref: str) -> bool:
+    """True for channel-directory display labels that must not be send targets."""
+    s = (ref or "").strip()
+    if not s:
+        return False
+    if "*" in s:
+        return True
+    if " / topic " in s.lower():
+        return True
+    if "<" in s and "@" in s:
+        return True
+    return False
+
+
+def _is_plausible_pingram_chat_id(chat_id: str) -> bool:
+    if not chat_id:
+        return False
+    if chat_id.startswith("sms:"):
+        return _is_plausible_sms_number(chat_id[len("sms:"):])
+    if chat_id.startswith("email:"):
+        return _is_deliverable_email(_recipient_from_email_chat_id(chat_id))
+    return False
 
 
 def _redact_user(value: Any) -> str:
@@ -383,8 +449,15 @@ def _recipient_from_email_chat_id(chat_id: str) -> str:
     thread-token-only legacy chat_id), so callers fall back to live context.
     """
     rest = chat_id[len("email:"):] if chat_id.startswith("email:") else chat_id
+    # Strip an extra ``:thread_id`` suffix appended by Hermes' channel directory
+    # when ``thread_id`` was also set on the session origin.
+    if "#" in rest:
+        addr_part, disc_part = rest.split("#", 1)
+        if ":" in disc_part:
+            disc_part = disc_part.split(":", 1)[0]
+        rest = f"{addr_part}#{disc_part}" if disc_part else addr_part
     address = rest.split("#", 1)[0].strip()
-    return address if "@" in address else ""
+    return address if _is_deliverable_email(address) else ""
 
 
 def _normalize_outbound_chat_id(chat_id: str) -> str:
@@ -398,17 +471,23 @@ def _normalize_outbound_chat_id(chat_id: str) -> str:
     raw = (chat_id or "").strip()
     if not raw:
         return ""
+    if _looks_like_pingram_directory_label(raw):
+        return ""
     if raw.startswith("sms:"):
         number = _normalize_phone_e164(raw[len("sms:"):])
-        return f"sms:{number}" if number else raw
+        return f"sms:{number}" if _is_plausible_sms_number(number) else ""
     if raw.startswith("email:"):
-        return raw
+        addr = _recipient_from_email_chat_id(raw)
+        return raw if addr else ""
     if "@" in raw:
-        return f"email:{_norm_email(raw)}"
+        addr = _parse_sender_email(raw)
+        return f"email:{addr}" if addr else ""
+    if "*" in raw:
+        return ""
     normalized = _normalize_phone_e164(raw)
-    if normalized:
+    if _is_plausible_sms_number(normalized):
         return f"sms:{normalized}"
-    return raw
+    return ""
 
 
 def _fetch_account_identities(api_key: str, region: str) -> Tuple[List[str], List[str]]:
@@ -729,7 +808,29 @@ class PingramAdapter(BasePlatformAdapter):
             return True
         if channel == "sms":
             return _norm_phone(_normalize_phone_e164(sender)) in self._allowed_phones
-        return _norm_email(sender) in self._allowed_emails
+        parsed = _parse_sender_email(sender)
+        if parsed and parsed in self._allowed_emails:
+            return True
+        if _norm_email(sender) in self._allowed_emails:
+            return True
+        if _is_routing_or_message_id_address(str(sender)) and self._allowed_emails:
+            return True
+        return False
+
+    def _resolve_inbound_email_sender(self, raw_from: Any) -> str:
+        """Map an inbound email From value to a deliverable, allowlisted address."""
+        parsed = _parse_sender_email(raw_from)
+        if parsed:
+            if self.allow_all or parsed in self._allowed_emails:
+                return parsed
+            return ""
+        if _is_routing_or_message_id_address(str(raw_from)) and self._allowed_emails:
+            if len(self._allowed_emails) == 1:
+                return next(iter(self._allowed_emails))
+            return ""
+        if len(self._allowed_emails) == 1:
+            return next(iter(self._allowed_emails))
+        return ""
 
     def _is_duplicate(self, key: str) -> bool:
         now = time.time()
@@ -879,7 +980,13 @@ class PingramAdapter(BasePlatformAdapter):
     async def _dispatch_sms(self, payload: dict) -> None:
         if not self._message_handler:
             return
-        sender = str(payload.get("from", ""))
+        sender = _normalize_phone_e164(payload.get("from", ""))
+        if not _is_plausible_sms_number(sender):
+            logger.warning(
+                "Pingram: ignoring SMS with invalid sender %s",
+                _redact_user(payload.get("from")),
+            )
+            return
         chat_id = f"sms:{sender}"
         text = payload.get("text") or ""
 
@@ -938,7 +1045,13 @@ class PingramAdapter(BasePlatformAdapter):
     async def _dispatch_email(self, payload: dict) -> None:
         if not self._message_handler:
             return
-        sender = _norm_email(payload.get("from", ""))
+        sender = self._resolve_inbound_email_sender(payload.get("from", ""))
+        if not sender:
+            logger.warning(
+                "Pingram: ignoring email with undeliverable sender %s",
+                _redact_user(payload.get("from")),
+            )
+            return
         subject = payload.get("subject") or ""
         # The thread token (References root / In-Reply-To / Message-ID) is stable
         # across a conversation, so the first message and its replies map to the
@@ -965,7 +1078,9 @@ class PingramAdapter(BasePlatformAdapter):
             chat_type="dm",
             user_id=sender,
             user_name=payload.get("fromName") or _redact_user(sender),
-            thread_id=thread_key or None,
+            # Thread is already encoded in ``chat_id`` via ``#<thread>``; omit
+            # ``thread_id`` here so Hermes' channel directory doesn't append a
+            # second ``:thread`` suffix to the entry id.
         )
         event = MessageEvent(
             text=text,
@@ -1041,7 +1156,12 @@ class PingramAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         if chat_id.startswith("sms:"):
-            number = chat_id[len("sms:"):]
+            number = _normalize_phone_e164(chat_id[len("sms:"):])
+            if not _is_plausible_sms_number(number):
+                return SendResult(
+                    success=False,
+                    error=f"Invalid SMS recipient: {_redact_user(number)}",
+                )
             return await self._send_sms(number, content)
         if chat_id.startswith("email:"):
             return await self._send_email(chat_id, content)
@@ -1050,6 +1170,12 @@ class PingramAdapter(BasePlatformAdapter):
     async def _send_sms(self, number: str, content: str, *, attachment_note: str = "") -> SendResult:
         if "sms" not in self.channels:
             return SendResult(success=False, error="SMS channel not configured")
+        number = _normalize_phone_e164(number)
+        if not _is_plausible_sms_number(number):
+            return SendResult(
+                success=False,
+                error=f"Invalid SMS recipient: {_redact_user(number)}",
+            )
         message = (content or "").strip()
         if attachment_note:
             message = f"{message}\n\n{attachment_note}".strip()
@@ -1077,6 +1203,10 @@ class PingramAdapter(BasePlatformAdapter):
         # makes cron/home-channel delivery and post-restart replies work without
         # any persisted state.
         to_email = (ctx or {}).get("to_email") or _recipient_from_email_chat_id(chat_id)
+        if not to_email:
+            home = os.getenv("PINGRAM_HOME_CHANNEL", "").strip()
+            if home.startswith("email:"):
+                to_email = _recipient_from_email_chat_id(home)
         if not to_email:
             return SendResult(success=False, error="No recipient email for thread")
 
@@ -1275,10 +1405,14 @@ async def _standalone_send(
         return {"error": "Pingram standalone send: pingram-python not installed"}
 
     resolved_chat_id = _normalize_outbound_chat_id(chat_id)
+    if not _is_plausible_pingram_chat_id(resolved_chat_id):
+        resolved_chat_id = ""
     if not resolved_chat_id:
         home = os.getenv("PINGRAM_HOME_CHANNEL", "").strip()
         if home:
             resolved_chat_id = _normalize_outbound_chat_id(home)
+    if resolved_chat_id and not _is_plausible_pingram_chat_id(resolved_chat_id):
+        resolved_chat_id = ""
     if not resolved_chat_id:
         return {
             "error": (
@@ -1349,10 +1483,27 @@ async def _standalone_send(
 
 def _parse_pingram_target_ref(target_ref: str) -> Optional[Tuple[str, None, bool]]:
     """Parse a Pingram ``send_message`` target into an explicit chat_id."""
-    chat_id = _normalize_outbound_chat_id((target_ref or "").strip())
-    if chat_id.startswith("sms:") or chat_id.startswith("email:"):
+    ref = (target_ref or "").strip()
+    if _looks_like_pingram_directory_label(ref):
+        return None
+    chat_id = _normalize_outbound_chat_id(ref)
+    if _is_plausible_pingram_chat_id(chat_id):
         return chat_id, None, True
     return None
+
+
+def _coerce_pingram_send_target(target: str) -> str:
+    """Route junk directory labels and partial numbers to the home channel."""
+    parts = target.split(":", 1)
+    if len(parts) < 2 or not parts[1].strip():
+        return target
+    ref = parts[1].strip()
+    if _looks_like_pingram_directory_label(ref):
+        return parts[0].strip()
+    chat_id = _normalize_outbound_chat_id(ref)
+    if chat_id and not _is_plausible_pingram_chat_id(chat_id):
+        return parts[0].strip()
+    return target
 
 
 def _install_send_message_target_parser() -> None:
@@ -1362,7 +1513,8 @@ def _install_send_message_target_parser() -> None:
     and has no Pingram-specific rules, so ``pingram:user@example.com`` fails
     channel-directory resolution before our standalone sender runs. Patch once
     at plugin registration so bare emails, E.164 numbers, and ``sms:`` /
-    ``email:`` prefixes all resolve correctly.
+    ``email:`` prefixes all resolve correctly. Also coerce channel-directory
+    display labels (``***8196``, ``subject / topic …``) to the home channel.
     """
     try:
         import tools.send_message_tool as smt
@@ -1371,16 +1523,27 @@ def _install_send_message_target_parser() -> None:
     if getattr(smt, "_pingram_target_parser_installed", False):
         return
 
-    original = smt._parse_target_ref
+    original_parse = smt._parse_target_ref
+    original_handle = smt._handle_send
 
     def _parse_target_ref(platform_name: str, target_ref: str):
         if platform_name == "pingram":
             parsed = _parse_pingram_target_ref(target_ref)
             if parsed is not None:
                 return parsed
-        return original(platform_name, target_ref)
+        return original_parse(platform_name, target_ref)
+
+    def _handle_send(args):
+        target = str(args.get("target", "") or "")
+        if target.lower().startswith("pingram:"):
+            coerced = _coerce_pingram_send_target(target)
+            if coerced != target:
+                args = dict(args)
+                args["target"] = coerced
+        return original_handle(args)
 
     smt._parse_target_ref = _parse_target_ref
+    smt._handle_send = _handle_send
     smt._pingram_target_parser_installed = True
 
 
@@ -1680,10 +1843,14 @@ def register(ctx):
             "subject and light HTML are fine; replies are threaded as 'Re:'. "
             "Inbound MMS images are provided to you as media (inbound email "
             "attachments are not available). "
-            "When using send_message to reach someone on Pingram: use target "
-            "'pingram' to deliver to the configured home channel (PINGRAM_HOME_CHANNEL); "
-            "or 'pingram:+15551234567' / 'pingram:user@example.com' / "
-            "'pingram:sms:+15551234567' / 'pingram:email:user@example.com'. "
+            "When proactively texting or emailing the user (weather, reminders, "
+            "'send me X', cron, etc.), ALWAYS use send_message with target "
+            "'pingram' — that delivers to PINGRAM_HOME_CHANNEL. NEVER use "
+            "send_message(action='list') targets for Pingram proactive sends: "
+            "labels like '***8196' or 'subject / topic …' are display names, not "
+            "phone numbers or email addresses. For explicit recipients use "
+            "'pingram:+15551234567', 'pingram:user@example.com', "
+            "'pingram:sms:+15551234567', or 'pingram:email:user@example.com'. "
             "You can proactively text or email users — Pingram is not limited to "
             "replying to existing threads."
         ),
