@@ -38,8 +38,9 @@ EMAIL_HINT = (
 )
 
 VOICE_HINT = (
-    "Pingram Voice is in alpha and not available yet. Email hello@pingram.io to reserve "
-    "beta access. Do not attempt send_message to pingram-voice."
+    "Pingram Voice is in beta and not enabled on this account yet. Do not attempt "
+    "send_message to pingram-voice. Run `hermes setup gateway` → Pingram Voice to "
+    "join the beta waitlist."
 )
 
 

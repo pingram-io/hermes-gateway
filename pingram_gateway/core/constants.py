@@ -22,10 +22,15 @@ PLATFORM_SMS = "pingram-sms"
 PLATFORM_EMAIL = "pingram-email"
 PLATFORM_VOICE = "pingram-voice"
 
-VOICE_ALPHA_MESSAGE = (
-    "Pingram Voice is in alpha and will be available ASAP. "
-    "Email hello@pingram.io to reserve your spot for beta."
+VOICE_BETA_CONTACT = "hello@pingram.io"
+
+VOICE_BETA_MESSAGE = (
+    "Pingram Voice is in beta. We're enabling access in batches — join the waitlist "
+    f"and we'll let you know when voice is turned on for your account."
 )
+
+# Legacy name used by the voice stub adapter.
+VOICE_ALPHA_MESSAGE = VOICE_BETA_MESSAGE
 
 DISPLAY_OVERRIDES = {
     "interim_assistant_messages": False,

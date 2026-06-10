@@ -1,6 +1,7 @@
 """Pingram SDK send helpers."""
 
 import asyncio
+import html as html_lib
 import logging
 from typing import Any, Dict, List, Tuple
 
@@ -142,4 +143,51 @@ def send_welcome_email(
         return asyncio.run(_send())
     except Exception:
         logger.debug("Pingram: welcome email failed", exc_info=True)
+        return False
+
+
+def send_voice_beta_signup(
+    api_key: str,
+    region: str,
+    user_email: str,
+    *,
+    from_email: str = "",
+    from_name: str = DEFAULT_FROM_NAME,
+) -> bool:
+    """Notify Pingram that a user wants Voice beta access."""
+    from pingram_gateway.core.constants import VOICE_BETA_CONTACT
+
+    if not user_email:
+        return False
+    subject = "Hermes Voice beta signup"
+    safe_email = html_lib.escape(user_email)
+    html = (
+        "<p>A Hermes user requested access to the Pingram Voice beta.</p>"
+        f"<p><strong>Contact email:</strong> {safe_email}</p>"
+        "<p>Submitted via the Hermes Pingram Voice setup wizard.</p>"
+    )
+    try:
+        from pingram import Pingram
+        from pingram.models.sender_post_body import SenderPostBody
+
+        async def _send() -> bool:
+            email_block: Dict[str, Any] = {
+                "subject": subject,
+                "html": html,
+                "senderName": from_name or DEFAULT_FROM_NAME,
+            }
+            if from_email:
+                email_block["senderEmail"] = from_email
+            body = {
+                "type": DEFAULT_NOTIFICATION_TYPE,
+                "to": {"id": VOICE_BETA_CONTACT, "email": VOICE_BETA_CONTACT},
+                "email": email_block,
+            }
+            async with Pingram(api_key=api_key, region=region) as client:
+                await client.send(SenderPostBody.from_dict(body))
+            return True
+
+        return asyncio.run(_send())
+    except Exception:
+        logger.debug("Pingram: voice beta signup email failed", exc_info=True)
         return False
