@@ -189,6 +189,8 @@ def normalize_sms_chat_id(raw: str) -> str:
         return ""
     if s.startswith("sms:"):
         s = s[len("sms:"):]
+    if s.lower().startswith("email:"):
+        return ""
     if "*" in s:
         return ""
     number = normalize_phone_e164(s)

@@ -16,11 +16,13 @@ from pingram_gateway.voice.setup import setup_voice
 INSTALL_HINT = "hermes plugins install pingram-io/hermes-gateway  (SDK auto-installs on first run)"
 
 SMS_HINT = (
-    "You are chatting over SMS via Pingram. Reply in plain text only (no markdown), "
-    "keep messages short (~160 characters per segment), and avoid links when possible. "
-    "Inbound MMS images are provided as media. For proactive texts (weather, reminders, "
-    "cron), use send_message with target 'pingram-sms' — never use channel-directory "
-    "display labels like '***8196'. You can also use 'pingram-sms:+15551234567'."
+    "You are chatting over SMS via Pingram (pingram-sms). Reply in plain text only "
+    "(no markdown), keep messages short (~160 characters per segment), and avoid links "
+    "when possible. Inbound MMS images are provided as media. When the user asks to "
+    "send an SMS (including from CLI), call send_message with target='pingram-sms' and "
+    "the message — this uses PINGRAM_SMS_HOME_CHANNEL. Do not suggest Twilio or other "
+    "SMS providers. Never use channel-directory display labels like '***8196'. "
+    "You can also use 'pingram-sms:+15551234567' for a specific number."
 )
 
 EMAIL_HINT = (

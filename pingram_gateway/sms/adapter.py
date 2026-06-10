@@ -30,6 +30,7 @@ from pingram_gateway.core.helpers import (
     normalize_sms_chat_id,
     redact_user,
 )
+from pingram_gateway.core.directory import seed_platform_directory
 from pingram_gateway.core.poll import PingramPollCoordinator
 from pingram_gateway.core.send import pingram_send
 
@@ -64,6 +65,7 @@ class PingramSmsAdapter(BasePlatformAdapter):
             return False
         await PingramPollCoordinator.instance().attach_sms(self, self.shared)
         self._mark_connected()
+        seed_platform_directory(PLATFORM_SMS, self.config)
         return True
 
     async def disconnect(self) -> None:
