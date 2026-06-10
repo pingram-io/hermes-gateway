@@ -39,8 +39,10 @@ Configuration (env vars override config.yaml ``extra``):
     PINGRAM_FROM_NAME          email sender display name; always sent (default: Hermes)
     PINGRAM_ALLOWED_USERS      csv of phones/emails allowed to talk to the agent
     PINGRAM_ALLOW_ALL_USERS    true to allow everyone (dev only; default false)
+    PINGRAM_HOME_CHANNEL       default destination for alerts/reminders/cron
+                               (``sms:+1...`` or ``email:you@example.com``)
     PINGRAM_NOTIFICATION_TYPE  Pingram notification `type` for replies
-                               (default: hermes_agent_reply)
+                               (default: hermes_agent)
 
 The Pingram SDK is auto-installed into the active Hermes venv on first run if it
 isn't already present (so ``hermes plugins install <repo>`` works without a
@@ -1290,6 +1292,12 @@ def _env_enablement() -> Optional[dict]:
         seed["poll_limit"] = os.getenv("PINGRAM_POLL_LIMIT").strip()
     if os.getenv("PINGRAM_NOTIFICATION_TYPE"):
         seed["notification_type"] = os.getenv("PINGRAM_NOTIFICATION_TYPE").strip()
+    home = os.getenv("PINGRAM_HOME_CHANNEL", "").strip()
+    if home:
+        seed["home_channel"] = {
+            "chat_id": home,
+            "name": os.getenv("PINGRAM_HOME_CHANNEL_NAME", "Home").strip() or "Home",
+        }
     return seed
 
 
@@ -1300,11 +1308,10 @@ def interactive_setup() -> None:
     the CLI prompt helpers so the plugin stays importable in non-CLI contexts
     (gateway runtime, tests).
 
-    Intentionally minimal: it asks only for the region, API key, and an access
-    allowlist (the one safety-critical setting). Everything else — channels
-    (defaults to SMS+Email), sender identity (Pingram defaults; display name
-    "Hermes"), and poll interval (15s) — uses defaults that remain editable via
-    env vars in ``~/.hermes/.env``.
+    Intentionally minimal: region, API key, access allowlist, and a default
+    contact method for proactive messages (alerts/reminders). Everything else —
+    channels (SMS+Email), sender identity (Pingram defaults; display name
+    "Hermes"), and poll interval (15s) — uses defaults editable via env vars.
     """
     from hermes_cli.setup import (
         prompt,
@@ -1388,6 +1395,34 @@ def interactive_setup() -> None:
     save_env_value("PINGRAM_ALLOWED_USERS", ",".join(allowed))
     save_env_value("PINGRAM_ALLOW_ALL_USERS", "false")
 
+    # Home channel — where Hermes sends proactive messages (alerts, reminders,
+    # cron, send_message to bare ``pingram``). One destination per platform, so
+    # the user picks SMS or email when they provided both.
+    allowlisted_phones = [u for u in allowed if "@" not in u]
+    allowlisted_emails = [u for u in allowed if "@" in u]
+    home_chat_id = ""
+    existing_home = (get_env_value("PINGRAM_HOME_CHANNEL") or "").strip()
+    if allowlisted_phones and allowlisted_emails:
+        print()
+        print_info("Where should Hermes send alerts and reminders?")
+        choices = [
+            f"Text message ({allowlisted_phones[0]})",
+            f"Email ({allowlisted_emails[0]})",
+        ]
+        default_idx = 1 if existing_home.startswith("email:") else 0
+        choice = prompt_choice("Default contact method", choices, default_idx)
+        home_chat_id = (
+            f"email:{allowlisted_emails[0]}"
+            if choice == 1
+            else f"sms:{allowlisted_phones[0]}"
+        )
+    elif allowlisted_phones:
+        home_chat_id = f"sms:{allowlisted_phones[0]}"
+    elif allowlisted_emails:
+        home_chat_id = f"email:{allowlisted_emails[0]}"
+    if home_chat_id:
+        save_env_value("PINGRAM_HOME_CHANNEL", home_chat_id)
+
     # Defaults applied without prompting (all editable via env vars):
     #   • Channels: both SMS + Email. This also gates platform enablement, so we
     #     must persist it; only set when unset to preserve an existing choice.
@@ -1458,7 +1493,7 @@ def register(ctx):
         validate_config=validate_config,
         is_connected=is_connected,
         required_env=["PINGRAM_API_KEY", "PINGRAM_REGION"],
-        install_hint="hermes plugins install pingram-io/hermes-gateway  (SDK auto-installs on first run; or: pip install hermes-pingram-gateway)",
+        install_hint="hermes plugins install pingram-io/hermes-gateway  (SDK auto-installs on first run)",
         env_enablement_fn=_env_enablement,
         setup_fn=interactive_setup,
         allowed_users_env="PINGRAM_ALLOWED_USERS",

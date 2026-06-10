@@ -31,35 +31,21 @@ The channel is encoded in the Hermes `chat_id` prefix: `sms:{phone}` and
   optional — Pingram provides a default SMS number and email sender, so you can
   start without provisioning your own.
 - Python packages `pingram-python` (the Pingram SDK) and `aiohttp` available to
-  the gateway — installed automatically with the `pip install` method below.
+  the gateway — installed automatically into the Hermes venv on first run.
 - No public host, tunnel, or webhook registration is required — the adapter
   polls Pingram for new messages.
 
 ## Install
 
-### Option 1: pip (recommended)
-
-Install from PyPI into the same environment as your Hermes agent. This pulls in
-the Pingram SDK and `aiohttp` for you, and registers the plugin via its
-`hermes_agent.plugins` entry point — the gateway discovers it automatically.
-
-```bash
-pip install hermes-pingram-gateway
-```
-
-> `hermes-pingram-gateway` is the plugin. It depends on `pingram-python`, the
-> Pingram SDK (imported as `pingram`); the two are separate packages.
-
-### Option 2: hermes plugins install (from source)
-
 ```bash
 hermes plugins install pingram-io/hermes-gateway
-pip install pingram-python aiohttp
 ```
 
-`hermes plugins install` git-clones this repo into `~/.hermes/plugins/pingram/`
-and the gateway auto-discovers it on next start. Because it doesn't install
-Python dependencies, you install the SDK and `aiohttp` yourself.
+This git-clones the repo into `~/.hermes/plugins/pingram/` and the gateway
+auto-discovers it on next start. The runtime dependencies (`pingram-python`, the
+Pingram SDK imported as `pingram`, and `aiohttp`) are installed automatically
+into the active Hermes venv the first time the plugin runs — there's no separate
+`pip install` step.
 
 ## Configure
 
