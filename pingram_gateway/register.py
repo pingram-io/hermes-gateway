@@ -6,6 +6,7 @@ from typing import Optional, Tuple
 from pingram_gateway.core.constants import PLATFORM_EMAIL, PLATFORM_SMS, PLATFORM_VOICE
 from pingram_gateway.core.helpers import check_shared_requirements
 from pingram_gateway.core.send_message import install_send_message_parsers
+from pingram_gateway.core.session_context import install_session_context_hook
 from pingram_gateway.email.adapter import PingramEmailAdapter, standalone_send_email
 from pingram_gateway.email.setup import setup_email
 from pingram_gateway.sms.adapter import PingramSmsAdapter, standalone_send_sms
@@ -137,3 +138,4 @@ def register(ctx):
     )
 
     install_send_message_parsers()
+    install_session_context_hook()

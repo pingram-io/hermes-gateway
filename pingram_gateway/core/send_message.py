@@ -5,6 +5,7 @@ from typing import Optional, Tuple
 
 from pingram_gateway.core.constants import PLATFORM_EMAIL, PLATFORM_SMS
 from pingram_gateway.core.directory import ensure_home_channel, format_list_supplement
+from pingram_gateway.core.discovery import ensure_plugins_discovered
 from pingram_gateway.core.helpers import (
     looks_like_directory_label,
     normalize_email_chat_id,
@@ -74,12 +75,7 @@ def coerce_send_target(target: str) -> str:
 
 
 def _ensure_plugin_platforms_discovered() -> None:
-    try:
-        from hermes_cli.plugins import discover_plugins
-
-        discover_plugins()
-    except Exception:
-        pass
+    ensure_plugins_discovered()
 
 
 def install_send_message_parsers() -> None:
