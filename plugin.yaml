@@ -3,55 +3,54 @@ label: Pingram
 kind: platform
 version: 1.0.0
 description: >
-  Pingram gateway adapter for Hermes Agent. Lets users chat with their Hermes
-  agent over Pingram-managed SMS and Email (including inbound MMS images).
-  Receives inbound messages by polling Pingram's logs API on a timer (no public
-  endpoint required) and sends replies through the Pingram Python SDK. One
-  combined `pingram` platform serves both channels; the channel is encoded in
-  the Hermes chat_id prefix (`sms:` / `email:`).
+  Pingram gateway adapters for Hermes Agent. Registers three platforms —
+  pingram-sms, pingram-email, and pingram-voice (alpha stub). SMS and Email
+  receive inbound messages by polling Pingram's logs API and send replies through
+  the Pingram Python SDK. Voice shows an alpha notice; email hello@pingram.io
+  to join the beta waitlist.
 author: Pingram
-# NOTE: no ``requires_env`` block on purpose. ``hermes plugins install`` prompts
-# for every ``requires_env`` entry at install time; we deliberately defer ALL
-# configuration (API key, region, channels, allowlist) to the guided
-# ``hermes setup gateway`` wizard instead, so installing the plugin is
-# prompt-free. The authoritative "required" vars (PINGRAM_API_KEY,
-# PINGRAM_REGION) are declared in the adapter's ``register(required_env=[...])``
-# and collected by the wizard. The entries below are optional/advanced and are
-# never prompted at install (only ``requires_env`` is).
 optional_env:
-  - name: PINGRAM_CHANNELS
-    description: "Comma-separated channels to enable: sms, email, or both (sms,email). This is what turns each channel on. Default: inferred from any configured sender (legacy)."
-    prompt: "Channels (sms,email)"
-    password: false
   - name: PINGRAM_FROM_SMS
-    description: "Optional. Specific Pingram/Telnyx sender number for SMS (E.164, e.g. +15551234567). Leave empty to use your Pingram account's default number — Pingram fills it in."
+    description: "Optional SMS sender number (E.164). Blank uses Pingram account default."
     prompt: "SMS sender number (optional)"
     password: false
   - name: PINGRAM_FROM_EMAIL
-    description: "Optional. Sender email address for Email (e.g. noreply@yourdomain.com, on a verified domain). Leave empty to use Pingram's default (noreply@pingram.io)."
+    description: "Optional email sender address. Blank uses Pingram default."
     prompt: "Email sender address (optional)"
     password: false
   - name: PINGRAM_FROM_NAME
-    description: "Email sender display name (e.g. \"Hermes\"). Always sent on outgoing emails; defaults to \"Hermes\" when unset. Applies to the Email channel only."
+    description: "Email sender display name (default Hermes)."
     prompt: "Email sender display name"
     password: false
+  - name: PINGRAM_SMS_ALLOWED_USERS
+    description: "Comma-separated phone numbers allowed to SMS the agent."
+    prompt: "SMS allowed users"
+    password: false
+  - name: PINGRAM_SMS_HOME_CHANNEL
+    description: "Default SMS destination for proactive sends and cron (E.164)."
+    prompt: "SMS home channel"
+    password: false
+  - name: PINGRAM_EMAIL_ALLOWED_USERS
+    description: "Comma-separated email addresses allowed to email the agent."
+    prompt: "Email allowed users"
+    password: false
+  - name: PINGRAM_EMAIL_HOME_CHANNEL
+    description: "Default email destination for proactive sends and cron."
+    prompt: "Email home channel"
+    password: false
   - name: PINGRAM_POLL_INTERVAL
-    description: "Seconds between polls of Pingram's logs API for new inbound messages (default: 15)."
+    description: "Seconds between inbound poll cycles (default 15)."
     prompt: "Poll interval (seconds)"
     password: false
   - name: PINGRAM_POLL_LIMIT
-    description: "Max messages fetched per poll page (default: 50)."
+    description: "Max messages fetched per poll page (default 50)."
     prompt: "Poll page size"
     password: false
-  - name: PINGRAM_ALLOWED_USERS
-    description: "Comma-separated phone numbers / email addresses allowed to talk to the agent"
-    prompt: "Allowed users (comma-separated)"
-    password: false
   - name: PINGRAM_ALLOW_ALL_USERS
-    description: "Optional. Allow anyone to talk to the agent (dev only). Default: false."
-    prompt: "Allow all users? (true/false, optional)"
+    description: "Allow anyone to talk to the agent (dev only). Default false."
+    prompt: "Allow all users? (true/false)"
     password: false
   - name: PINGRAM_NOTIFICATION_TYPE
-    description: "Pingram notification `type` used when sending replies (default: hermes_agent_reply)"
+    description: "Pingram notification type for outbound messages (default hermes_agent)."
     prompt: "Notification type"
     password: false

@@ -1,0 +1,1 @@
+"""Shared Pingram gateway infrastructure."""
