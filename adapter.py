@@ -387,6 +387,28 @@ def _recipient_from_email_chat_id(chat_id: str) -> str:
     return address if "@" in address else ""
 
 
+def _normalize_outbound_chat_id(chat_id: str) -> str:
+    """Map send_message / cron targets to PingramAdapter ``chat_id`` format.
+
+    Hermes' ``send_message`` tool may pass a bare E.164 number or email address
+    (``pingram:+1555...``) rather than our canonical ``sms:`` / ``email:``
+    prefixes. Standalone and gateway sends both normalize here so delivery works
+    regardless of how the target was specified.
+    """
+    raw = (chat_id or "").strip()
+    if not raw:
+        return ""
+    if raw.startswith("sms:"):
+        number = _normalize_phone_e164(raw[len("sms:"):])
+        return f"sms:{number}" if number else raw
+    if raw.startswith("email:"):
+        return raw
+    if "@" in raw:
+        return f"email:{_norm_email(raw)}"
+    normalized = _normalize_phone_e164(raw)
+    if normalized:
+        return f"sms:{normalized}"
+    return raw
 def _fetch_account_identities(api_key: str, region: str) -> Tuple[List[str], List[str]]:
     """Best-effort: return ``(email_addresses, phone_numbers)`` for the account.
 
@@ -1221,6 +1243,107 @@ class PingramAdapter(BasePlatformAdapter):
             return None, ""
 
 
+async def _standalone_send(
+    pconfig,
+    chat_id: str,
+    message: str,
+    *,
+    thread_id: Optional[str] = None,
+    media_files: Optional[List[Any]] = None,
+    force_document: bool = False,
+) -> Dict[str, Any]:
+    """Out-of-process send via the Pingram SDK (CLI, cron, send_message fallback).
+
+    Used by ``tools/send_message_tool._send_via_adapter`` when the gateway
+    runner is not in this process (local ``hermes`` CLI, cron in a separate
+    process, etc.). Opens an ephemeral :class:`PingramAdapter` and sends
+    directly — no live gateway connection required.
+
+    ``thread_id`` is forwarded as send metadata for email threading when set.
+    ``media_files`` delivers attachments on email; SMS falls back to the
+    adapter's existing attachment-note behaviour.
+    """
+    extra = getattr(pconfig, "extra", {}) or {}
+    if not (os.getenv("PINGRAM_API_KEY") or extra.get("api_key")):
+        return {"error": "Pingram standalone send: PINGRAM_API_KEY not configured"}
+
+    if not await asyncio.to_thread(_ensure_importable, _AIOHTTP_IMPORT, _AIOHTTP_PACKAGE):
+        return {"error": "Pingram standalone send: aiohttp not installed"}
+    if not await asyncio.to_thread(_ensure_importable, _PINGRAM_IMPORT, _PINGRAM_PACKAGE):
+        return {"error": "Pingram standalone send: pingram-python not installed"}
+
+    resolved_chat_id = _normalize_outbound_chat_id(chat_id)
+    if not resolved_chat_id:
+        home = os.getenv("PINGRAM_HOME_CHANNEL", "").strip()
+        if home:
+            resolved_chat_id = _normalize_outbound_chat_id(home)
+    if not resolved_chat_id:
+        return {
+            "error": (
+                "Pingram standalone send: no recipient. Specify a target like "
+                "'pingram:sms:+15005005000' or set PINGRAM_HOME_CHANNEL."
+            )
+        }
+
+    try:
+        adapter = PingramAdapter(pconfig)
+    except Exception as e:
+        logger.debug("Pingram: standalone adapter init failed", exc_info=True)
+        return {"error": f"Pingram standalone send: {e}"}
+
+    if not adapter.api_key:
+        return {"error": "Pingram standalone send: PINGRAM_API_KEY not configured"}
+    if not adapter.channels:
+        return {"error": "Pingram standalone send: enable sms and/or email via PINGRAM_CHANNELS"}
+
+    metadata = {"thread_id": thread_id} if thread_id else None
+    text = (message or "").strip()
+
+    try:
+        if media_files and not text:
+            # Media-only: route through the adapter's media helpers.
+            media_path, _is_voice = media_files[0]
+            ext = os.path.splitext(str(media_path))[1].lower()
+            if ext in {".jpg", ".jpeg", ".png", ".webp", ".gif"} and not force_document:
+                result = await adapter.send_image_file(resolved_chat_id, media_path)
+            else:
+                result = await adapter.send_document(resolved_chat_id, media_path)
+        else:
+            result = await adapter.send(resolved_chat_id, text, metadata=metadata)
+            if result.success and media_files:
+                for media_path, _is_voice in media_files:
+                    ext = os.path.splitext(str(media_path))[1].lower()
+                    if ext in {".jpg", ".jpeg", ".png", ".webp", ".gif"} and not force_document:
+                        media_result = await adapter.send_image_file(
+                            resolved_chat_id, media_path, caption=""
+                        )
+                    else:
+                        media_result = await adapter.send_document(
+                            resolved_chat_id, media_path, caption=""
+                        )
+                    if not media_result.success:
+                        return {
+                            "error": media_result.error or "Pingram media send failed",
+                            "success": True,
+                            "platform": "pingram",
+                            "chat_id": resolved_chat_id,
+                            "message_id": result.message_id,
+                            "note": "Text sent; a follow-up attachment failed.",
+                        }
+    except Exception as e:
+        logger.debug("Pingram: standalone send failed", exc_info=True)
+        return {"error": f"Pingram standalone send failed: {e}"}
+
+    if result.success:
+        return {
+            "success": True,
+            "platform": "pingram",
+            "chat_id": resolved_chat_id,
+            "message_id": result.message_id,
+        }
+    return {"error": result.error or "Pingram send failed"}
+
+
 # ---------------------------------------------------------------------------
 # Plugin registration
 # ---------------------------------------------------------------------------
@@ -1502,6 +1625,9 @@ def register(ctx):
         # set via /sethome is stored here; for email it embeds the recipient
         # address (see _email_chat_id) so delivery survives restarts.
         cron_deliver_env_var="PINGRAM_HOME_CHANNEL",
+        # Out-of-process delivery for CLI ``send_message``, cron, etc. Without
+        # this hook those paths fail with "No live adapter for platform".
+        standalone_sender_fn=_standalone_send,
         emoji="📨",
         pii_safe=True,
         allow_update_command=True,
