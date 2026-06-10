@@ -52,12 +52,6 @@ def setup_email() -> None:
     if account_emails and not (get_env_value("PINGRAM_FROM_EMAIL") or "").strip():
         save_env_value("PINGRAM_FROM_EMAIL", account_emails[0])
 
-    from_email = prompt(
-        "Optional: sender email address (leave blank for Pingram default)",
-        default=get_env_value("PINGRAM_FROM_EMAIL") or "",
-    )
-    if from_email.strip():
-        save_env_value("PINGRAM_FROM_EMAIL", norm_email(from_email))
     from_name = prompt(
         "Email sender display name",
         default=get_env_value("PINGRAM_FROM_NAME") or DEFAULT_FROM_NAME,

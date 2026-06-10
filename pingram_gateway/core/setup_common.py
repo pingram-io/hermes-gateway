@@ -32,7 +32,7 @@ def shared_credentials_configured() -> bool:
     return bool((get_env_value("PINGRAM_API_KEY") or "").strip())
 
 
-def prompt_region_and_api_key(*, header: str, reconfigure_default: bool = False) -> Tuple[Optional[str], Optional[str]]:
+def prompt_region_and_api_key(*, header: str) -> Tuple[Optional[str], Optional[str]]:
     from hermes_cli.setup import (
         get_env_value,
         print_header,
@@ -48,7 +48,7 @@ def prompt_region_and_api_key(*, header: str, reconfigure_default: bool = False)
 
     if shared_credentials_configured():
         print_info("Shared Pingram region and API key are already set.")
-        if not prompt_yes_no("  Reconfigure region and API key?", reconfigure_default):
+        if prompt_yes_no("  Re-use existing Pingram region and API key?", True):
             api_key = (get_env_value("PINGRAM_API_KEY") or "").strip()
             region = (get_env_value("PINGRAM_REGION") or "us").strip().lower()
             return region, api_key
