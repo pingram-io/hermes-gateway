@@ -39,6 +39,7 @@ from pingram_gateway.core.helpers import (
 from pingram_gateway.core.directory import seed_platform_directory
 from pingram_gateway.core.poll import PingramPollCoordinator
 from pingram_gateway.core.send import pingram_send
+from pingram_gateway.email.subject import resolve_outbound_subject
 
 logger = logging.getLogger(__name__)
 
@@ -169,9 +170,17 @@ class PingramEmailAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         normalized = normalize_email_chat_id(chat_id) or chat_id
-        return await self._send_email(normalized, content)
+        explicit_subject = (metadata or {}).get("subject")
+        return await self._send_email(normalized, content, explicit_subject=explicit_subject)
 
-    async def _send_email(self, chat_id: str, content: str, *, attachments: Optional[List[dict]] = None) -> SendResult:
+    async def _send_email(
+        self,
+        chat_id: str,
+        content: str,
+        *,
+        attachments: Optional[List[dict]] = None,
+        explicit_subject: Optional[str] = None,
+    ) -> SendResult:
         ctx = self._reply_ctx.get(chat_id)
         to_email = (ctx or {}).get("to_email") or recipient_from_email_chat_id(chat_id)
         if not to_email:
@@ -180,10 +189,8 @@ class PingramEmailAdapter(BasePlatformAdapter):
                 to_email = recipient_from_email_chat_id(home) or home.split("#", 1)[0]
         if not to_email:
             return SendResult(success=False, error="No recipient email for thread")
-        subject = (ctx or {}).get("subject") or "Message from your Hermes agent"
-        if not subject.lower().startswith("re:"):
-            subject = f"Re: {subject}"
-        email_block: Dict[str, Any] = {"subject": subject, "html": text_to_html(content), "senderName": self.from_name}
+        subject, body = resolve_outbound_subject(content, ctx, explicit_subject=explicit_subject)
+        email_block: Dict[str, Any] = {"subject": subject, "html": text_to_html(body), "senderName": self.from_name}
         if self.from_email:
             email_block["senderEmail"] = self.from_email
         body: Dict[str, Any] = {

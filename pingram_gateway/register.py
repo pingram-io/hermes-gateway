@@ -26,10 +26,13 @@ SMS_HINT = (
 )
 
 EMAIL_HINT = (
-    "You are chatting over Email via Pingram. Subjects and light HTML are fine; replies "
-    "are threaded as 'Re:'. Inbound email attachments are not available when polling. "
-    "For proactive emails, use send_message with target 'pingram-email' — never use "
-    "channel-directory subject/topic labels. You can also use 'pingram-email:user@example.com'."
+    "You are chatting over Email via Pingram. Subjects and light HTML are fine. "
+    "For proactive emails (including from CLI), use send_message with target "
+    "'pingram-email' and always set the subject parameter to a short, specific "
+    "summary of the message (do not prefix with 'Re:' on new threads). Replies "
+    "in an existing inbound thread are threaded automatically with Re:. Inbound "
+    "email attachments are not available when polling. Never use channel-directory "
+    "subject/topic labels. You can also use 'pingram-email:user@example.com'."
 )
 
 VOICE_HINT = (

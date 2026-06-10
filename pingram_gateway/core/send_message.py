@@ -85,6 +85,8 @@ def install_send_message_parsers() -> None:
     original_handle = smt._handle_send
     original_list = smt._handle_list
 
+    _extend_send_message_schema(smt)
+
     def _parse_target_ref(platform_name: str, target_ref: str):
         if platform_name == PLATFORM_SMS:
             parsed = parse_sms_target_ref(target_ref)
@@ -131,9 +133,41 @@ def install_send_message_parsers() -> None:
             except Exception:
                 pass
 
-        return original_handle(args)
+        subject = str(args.get("subject", "") or "").strip()
+        token = None
+        if subject and (not platform_name or platform_name == PLATFORM_EMAIL):
+            from pingram_gateway.email.subject import reset_proactive_subject, set_proactive_subject
+
+            token = set_proactive_subject(subject)
+        try:
+            return original_handle(args)
+        finally:
+            if token is not None:
+                reset_proactive_subject(token)
 
     smt._parse_target_ref = _parse_target_ref
     smt._handle_send = _handle_send
     smt._handle_list = _handle_list
+    smt._send_via_adapter = _send_via_adapter
     smt._pingram_split_target_parser_installed = True
+
+
+def _extend_send_message_schema(smt) -> None:
+    props = smt.SEND_MESSAGE_SCHEMA["parameters"]["properties"]
+    if "subject" not in props:
+        props["subject"] = {
+            "type": "string",
+            "description": (
+                "Email subject for proactive pingram-email sends (new threads). "
+                "Write a short, specific subject summarizing the message — do not "
+                "use 'Re:' for new threads. Omit for SMS and when replying in an "
+                "existing email thread."
+            ),
+        }
+    description = smt.SEND_MESSAGE_SCHEMA.get("description") or ""
+    if "pingram-email" not in description:
+        smt.SEND_MESSAGE_SCHEMA["description"] = (
+            description.rstrip()
+            + "\n\nFor proactive pingram-email sends, always provide a concise, "
+            "descriptive subject parameter."
+        )
