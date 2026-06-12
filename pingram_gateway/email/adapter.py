@@ -18,7 +18,7 @@ from gateway.platforms.base import (
     cache_image_from_bytes,
 )
 
-from pingram_gateway.core.config import load_email_allowlist, load_shared_config
+from pingram_gateway.core.config import email_inbound_ready, load_email_allowlist, load_shared_config
 from pingram_gateway.core.constants import DEFAULT_FROM_NAME, DOWNLOAD_TIMEOUT, PLATFORM_EMAIL
 from pingram_gateway.core.helpers import (
     cfg_value,
@@ -61,10 +61,10 @@ class PingramEmailAdapter(BasePlatformAdapter):
         if not self.shared.api_key:
             self._set_fatal_error("config_missing", "PINGRAM_API_KEY must be set", retryable=False)
             return False
-        if not self._allowed:
+        if not email_inbound_ready(self.config):
             self._set_fatal_error(
                 "config_missing",
-                "PINGRAM_EMAIL_ALLOWED_USERS or PINGRAM_EMAIL_HOME_CHANNEL must be set",
+                "Set PINGRAM_EMAIL_ALLOWED_USERS or PINGRAM_ALLOW_ALL_USERS=true",
                 retryable=False,
             )
             return False

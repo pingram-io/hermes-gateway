@@ -1,7 +1,17 @@
 """Inject Pingram delivery guidance into local CLI session context."""
 
+import os
+
 from pingram_gateway.core.constants import PLATFORM_EMAIL, PLATFORM_SMS
 from pingram_gateway.core.discovery import ensure_plugins_discovered
+
+
+def _has_home_channel(platform_name: str) -> bool:
+    if platform_name == PLATFORM_SMS:
+        return bool(os.getenv("PINGRAM_SMS_HOME_CHANNEL", "").strip())
+    if platform_name == PLATFORM_EMAIL:
+        return bool(os.getenv("PINGRAM_EMAIL_HOME_CHANNEL", "").strip())
+    return False
 
 
 def build_cli_delivery_note(context) -> str:
@@ -43,16 +53,29 @@ def build_cli_delivery_note(context) -> str:
         "skill, IMAP/SMTP tools, or other mailbox CLIs.",
     ]
     if has_sms:
-        lines.append(
-            '- SMS: send_message(target="pingram-sms", message="...") '
-            "(delivers to the Pingram SMS home channel)."
-        )
+        if _has_home_channel(PLATFORM_SMS):
+            lines.append(
+                '- SMS: send_message(target="pingram-sms", message="...") '
+                "(delivers to the Pingram SMS home channel)."
+            )
+        else:
+            lines.append(
+                '- SMS: send_message(target="pingram-sms:+15551234567", message="...") '
+                "(SMS is not a home channel — include the recipient number)."
+            )
     if has_email:
-        lines.append(
-            '- Email: send_message(target="pingram-email", subject="Short descriptive subject", '
-            'message="<p>...</p>") — write message as HTML (not markdown); always set subject on '
-            'new threads; do not prefix with "Re:" proactively.'
-        )
+        if _has_home_channel(PLATFORM_EMAIL):
+            lines.append(
+                '- Email: send_message(target="pingram-email", subject="Short descriptive subject", '
+                'message="<p>...</p>") — write message as HTML (not markdown); always set subject on '
+                'new threads; do not prefix with "Re:" proactively.'
+            )
+        else:
+            lines.append(
+                '- Email: send_message(target="pingram-email:user@example.com", '
+                'subject="Short descriptive subject", message="<p>...</p>") — email is not a home '
+                "channel, so include the recipient address; use HTML, not markdown."
+            )
     lines.append(
         "- Do not load or use the himalaya skill for outbound delivery when Pingram is configured."
     )

@@ -82,7 +82,7 @@ def sms_configured(config) -> bool:
         return False
     allowed = os.getenv("PINGRAM_SMS_ALLOWED_USERS") or cfg_value(config, "PINGRAM_SMS_ALLOWED_USERS", "allowed_users", "")
     home = os.getenv("PINGRAM_SMS_HOME_CHANNEL") or cfg_value(config, "PINGRAM_SMS_HOME_CHANNEL", "home_channel_chat_id", "")
-    return bool(parse_csv(allowed) or str(home).strip())
+    return bool(parse_csv(allowed) or str(home).strip() or shared.allow_all)
 
 
 def email_configured(config) -> bool:
@@ -95,7 +95,7 @@ def email_configured(config) -> bool:
     home = os.getenv("PINGRAM_EMAIL_HOME_CHANNEL") or cfg_value(
         config, "PINGRAM_EMAIL_HOME_CHANNEL", "home_channel_chat_id", ""
     )
-    return bool(parse_csv(allowed) or str(home).strip())
+    return bool(parse_csv(allowed) or str(home).strip() or shared.allow_all)
 
 
 def load_sms_allowlist(config) -> set:
@@ -108,3 +108,27 @@ def load_email_allowlist(config) -> set:
         os.getenv("PINGRAM_EMAIL_ALLOWED_USERS") or cfg_value(config, "PINGRAM_EMAIL_ALLOWED_USERS", "allowed_users", "")
     )
     return {norm_email(a) for a in allowed if "@" in a}
+
+
+def sms_home_channel(config) -> str:
+    return str(
+        os.getenv("PINGRAM_SMS_HOME_CHANNEL") or cfg_value(config, "PINGRAM_SMS_HOME_CHANNEL", "home_channel_chat_id", "")
+    ).strip()
+
+
+def email_home_channel(config) -> str:
+    return str(
+        os.getenv("PINGRAM_EMAIL_HOME_CHANNEL") or cfg_value(config, "PINGRAM_EMAIL_HOME_CHANNEL", "home_channel_chat_id", "")
+    ).strip()
+
+
+def sms_inbound_ready(config) -> bool:
+    if load_sms_allowlist(config):
+        return True
+    return load_shared_config(config).allow_all
+
+
+def email_inbound_ready(config) -> bool:
+    if load_email_allowlist(config):
+        return True
+    return load_shared_config(config).allow_all

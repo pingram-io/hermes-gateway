@@ -117,7 +117,15 @@ def install_send_message_parsers() -> None:
                     display = "Available messaging targets:\n\n" + supplement
                 else:
                     display = display.rstrip() + "\n\n" + supplement
-                display = display.rstrip() + '\n\nUse "pingram-sms" alone to send to the SMS home channel.'
+                from pingram_gateway.core.config import email_home_channel, sms_home_channel
+
+                hints = []
+                if sms_home_channel(config):
+                    hints.append('Use "pingram-sms" alone to send to the SMS home channel.')
+                if email_home_channel(config):
+                    hints.append('Use "pingram-email" alone to send to the Email home channel.')
+                if hints:
+                    display = display.rstrip() + "\n\n" + " ".join(hints)
             return json.dumps({"targets": display})
         except Exception as exc:
             return original_list() if callable(original_list) else json.dumps({"error": str(exc)})

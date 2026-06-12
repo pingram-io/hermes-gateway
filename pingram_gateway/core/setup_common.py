@@ -1,9 +1,10 @@
 """Shared setup wizard helpers."""
 
 import logging
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
-from pingram_gateway.core.constants import DISPLAY_OVERRIDES
+from pingram_gateway.core.constants import DEFAULT_FROM_NAME, DISPLAY_OVERRIDES
+from pingram_gateway.core.helpers import norm_email, normalize_phone_e164, parse_csv
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +33,7 @@ def shared_credentials_configured() -> bool:
     return bool((get_env_value("PINGRAM_API_KEY") or "").strip())
 
 
-def prompt_region_and_api_key(*, header: str) -> Tuple[Optional[str], Optional[str]]:
+def prompt_region_and_api_key(*, header: str, skip_header: bool = False) -> Tuple[Optional[str], Optional[str]]:
     from hermes_cli.setup import (
         get_env_value,
         print_header,
@@ -44,7 +45,11 @@ def prompt_region_and_api_key(*, header: str) -> Tuple[Optional[str], Optional[s
         save_env_value,
     )
 
-    print_header(header)
+    if not skip_header:
+        print_header(header)
+    else:
+        print()
+        print_info(f"Pingram credentials ({header}).")
 
     if shared_credentials_configured():
         print_info("Shared Pingram region and API key are already set.")
@@ -69,6 +74,205 @@ def prompt_region_and_api_key(*, header: str) -> Tuple[Optional[str], Optional[s
         return None, None
     save_env_value("PINGRAM_API_KEY", api_key.strip())
     return region, api_key.strip()
+
+
+def prompt_setup_mode() -> str:
+    from hermes_cli.setup import print_info, prompt_choice
+
+    print()
+    print_info("How do you want to set this up?")
+    mode = prompt_choice(
+        "Setup mode",
+        ["Quick setup (recommended)", "Advanced configuration"],
+        0,
+    )
+    return "quick" if mode == 0 else "advanced"
+
+
+def prompt_sms_phone(*, label: str, default: str = "", allow_empty: bool = False) -> Optional[str]:
+    from hermes_cli.setup import print_warning, prompt
+
+    while True:
+        phone_raw = prompt(label, default=default)
+        if allow_empty and not (phone_raw or "").strip():
+            return None
+        phone = normalize_phone_e164(phone_raw)
+        if phone:
+            return phone
+        print_warning("Please enter a valid phone number (E.164, e.g. +15005005000).")
+
+
+def prompt_email_address(*, label: str, default: str = "") -> str:
+    from hermes_cli.setup import print_warning, prompt
+
+    while True:
+        email_raw = prompt(label, default=default)
+        email = norm_email(email_raw)
+        if email and "@" in email:
+            return email
+        print_warning("Please enter a valid email address.")
+
+
+def prompt_sms_allowlist(*, default: str = "") -> List[str]:
+    from hermes_cli.setup import print_info, print_warning, prompt
+
+    print_info("Only these phone numbers may text your agent (comma-separated, E.164).")
+    while True:
+        raw = prompt("Allowed phone numbers", default=default)
+        phones = []
+        for part in parse_csv(raw):
+            phone = normalize_phone_e164(part)
+            if phone:
+                phones.append(phone)
+        if phones:
+            return phones
+        print_warning("Enter at least one valid phone number.")
+
+
+def prompt_email_allowlist(*, default: str = "") -> List[str]:
+    from hermes_cli.setup import print_info, print_warning, prompt
+
+    print_info("Only these email addresses may reach your agent (comma-separated).")
+    while True:
+        raw = prompt("Allowed email addresses", default=default)
+        emails = []
+        for part in parse_csv(raw):
+            email = norm_email(part)
+            if email and "@" in email:
+                emails.append(email)
+        if emails:
+            return emails
+        print_warning("Enter at least one valid email address.")
+
+
+def prompt_from_sms(*, numbers: List[str], default: str = "", advanced: bool) -> Optional[str]:
+    from hermes_cli.setup import prompt_yes_no
+
+    existing = (default or "").strip()
+    if not advanced:
+        if existing:
+            return existing
+        return numbers[0] if numbers else None
+
+    if numbers:
+        from hermes_cli.setup import prompt_choice
+
+        labels = numbers + ["Other (enter manually)"]
+        default_idx = numbers.index(existing) if existing in numbers else 0
+        choice = prompt_choice("Outbound SMS sender number", labels, default_idx)
+        if choice < len(numbers):
+            return numbers[choice]
+        manual_default = existing if existing and existing not in numbers else ""
+        return prompt_sms_phone(label="Outbound SMS sender number (E.164)", default=manual_default)
+
+    if existing:
+        if prompt_yes_no(f"  Keep outbound sender {existing}?", True):
+            return existing
+    optional = prompt_sms_phone(
+        label="Outbound SMS sender number (E.164, leave blank to skip)",
+        default="",
+        allow_empty=True,
+    )
+    return optional
+
+
+def prompt_from_email(
+    *,
+    emails: List[str],
+    default: str = "",
+    advanced: bool,
+) -> Tuple[Optional[str], Optional[str]]:
+    from hermes_cli.setup import prompt, prompt_choice, prompt_yes_no
+
+    existing = (default or "").strip()
+    from_email: Optional[str] = None
+
+    if not advanced:
+        from_email = existing or (emails[0] if emails else None)
+    elif emails:
+        labels = emails + ["Other (enter manually)"]
+        default_idx = emails.index(existing) if existing in emails else 0
+        choice = prompt_choice("Outbound email sender address", labels, default_idx)
+        if choice < len(emails):
+            from_email = emails[choice]
+        else:
+            manual_default = existing if existing and existing not in emails else ""
+            from_email = prompt_email_address(label="Outbound email sender address", default=manual_default)
+    elif existing:
+        if prompt_yes_no(f"  Keep outbound sender {existing}?", True):
+            from_email = existing
+        else:
+            from_email = prompt_email_address(label="Outbound email sender address", default="")
+    else:
+        from_email = prompt_email_address(label="Outbound email sender address (optional)", default="")
+
+    from_name: Optional[str] = None
+    if advanced:
+        from hermes_cli.setup import get_env_value, prompt
+
+        existing_name = (get_env_value("PINGRAM_FROM_NAME") or DEFAULT_FROM_NAME).strip()
+        from_name = prompt("Display name on outbound emails", default=existing_name).strip() or DEFAULT_FROM_NAME
+
+    return from_email, from_name
+
+
+def existing_allow_all_default() -> bool:
+    from hermes_cli.setup import get_env_value
+
+    from pingram_gateway.core.helpers import truthy
+
+    return truthy(get_env_value("PINGRAM_ALLOW_ALL_USERS"))
+
+
+def prompt_allow_all_senders(*, default: bool = False) -> bool:
+    from hermes_cli.setup import print_info, prompt_yes_no
+
+    print()
+    print_info("When enabled, anyone who texts or emails your Pingram address can reach your agent.")
+    return prompt_yes_no("Allow anyone to reach your agent?", default)
+
+
+def prompt_use_as_home_channel(*, channel_label: str, default: bool = True) -> bool:
+    from hermes_cli.setup import print_info, prompt_yes_no
+
+    print()
+    print_info(
+        f"Hermes uses a platform's home channel for scheduled/cron delivery and "
+        f"default proactive send_message targets."
+    )
+    return prompt_yes_no(f"Use {channel_label} as a Hermes home channel?", default)
+
+
+def prompt_home_channel_sms(*, allowed: List[str], default: str = "") -> str:
+    from hermes_cli.setup import prompt_choice
+
+    if len(allowed) == 1:
+        return allowed[0]
+    default_idx = allowed.index(default) if default in allowed else 0
+    choice = prompt_choice("Default delivery phone number", allowed, default_idx)
+    return allowed[choice]
+
+
+def prompt_home_channel_email(*, allowed: List[str], default: str = "") -> str:
+    from hermes_cli.setup import prompt_choice
+
+    if len(allowed) == 1:
+        return allowed[0]
+    default_idx = allowed.index(default) if default in allowed else 0
+    choice = prompt_choice("Default delivery email address", allowed, default_idx)
+    return allowed[choice]
+
+
+def save_home_channel_env(env_key: str, chat_id: Optional[str]) -> None:
+    from hermes_cli.setup import save_env_value
+
+    save_env_value(env_key, (chat_id or "").strip())
+
+
+def save_allowlist_env(key: str, values: List[str]) -> None:
+    from hermes_cli.setup import save_env_value
+
+    save_env_value(key, ",".join(values) if values else "")
 
 
 def seed_display_overrides(load_config, save_config, platform_key: str) -> None:
@@ -101,3 +305,27 @@ def enable_gateway_platform(load_config, save_config, platform_key: str) -> None
         save_config(config)
     except Exception:
         logger.debug("Pingram: failed to enable platform %s in config", platform_key, exc_info=True)
+
+
+def set_gateway_home_channel(platform_key: str, chat_id: Optional[str]) -> None:
+    try:
+        from gateway.config import HomeChannel, Platform, load_gateway_config
+
+        config = load_gateway_config()
+        platform = Platform(platform_key)
+        pconfig = config.platforms.get(platform)
+        if pconfig is None:
+            return
+        if chat_id:
+            pconfig.home_channel = HomeChannel(platform=platform, chat_id=chat_id, name="Home")
+        else:
+            pconfig.home_channel = None
+        save_fn = getattr(config, "save", None) or getattr(
+            __import__("gateway.config", fromlist=["save_gateway_config"]),
+            "save_gateway_config",
+            None,
+        )
+        if callable(save_fn):
+            save_fn(config)
+    except Exception:
+        logger.debug("Pingram: failed to set home channel for %s", platform_key, exc_info=True)
