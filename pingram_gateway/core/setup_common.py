@@ -145,10 +145,12 @@ def prompt_email_allowlist(*, default: str = "") -> List[str]:
         print_warning("Enter at least one valid email address.")
 
 
-def prompt_from_sms(*, numbers: List[str], default: str = "", advanced: bool) -> Optional[str]:
+def prompt_from_sms(*, numbers: List[str], default: str = "", advanced: bool, exclude: str = "") -> Optional[str]:
     from hermes_cli.setup import prompt_yes_no
 
     existing = (default or "").strip()
+    if exclude and existing == (exclude or "").strip():
+        existing = ""
     if not advanced:
         if existing:
             return existing

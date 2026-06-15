@@ -94,7 +94,7 @@ def setup_email() -> None:
     save_home_channel_env("PINGRAM_EMAIL_HOME_CHANNEL", home_channel)
 
     print_info("Checking your Pingram account...")
-    account_emails, _numbers = fetch_account_identities(api_key, region)
+    account_emails, _, _ = fetch_account_identities(api_key, region)
 
     from_email, from_name = prompt_from_email(
         emails=account_emails,

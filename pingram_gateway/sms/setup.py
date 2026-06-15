@@ -94,12 +94,13 @@ def setup_sms() -> None:
     save_home_channel_env("PINGRAM_SMS_HOME_CHANNEL", home_channel)
 
     print_info("Checking your Pingram account...")
-    _emails, numbers = fetch_account_identities(api_key, region)
+    _emails, dedicated_numbers, shared_number = fetch_account_identities(api_key, region)
 
     from_sms = prompt_from_sms(
-        numbers=numbers,
+        numbers=dedicated_numbers,
         default=(get_env_value("PINGRAM_FROM_SMS") or "").strip(),
         advanced=advanced,
+        exclude=shared_number or "",
     )
     if from_sms:
         save_env_value("PINGRAM_FROM_SMS", from_sms)
@@ -112,11 +113,16 @@ def setup_sms() -> None:
 
     print()
     print_success("Pingram SMS configured!")
-    if numbers:
+    if dedicated_numbers or shared_number:
         print()
         print(color("  📱 Your agent is reachable by SMS at:", Colors.BOLD, Colors.MAGENTA))
-        for number in numbers:
+        for number in dedicated_numbers:
             print(color(f"     ➜  {number}", Colors.BOLD, Colors.GREEN))
+        if shared_number:
+            suffix = " (shared)" if dedicated_numbers else ""
+            print(color(f"     ➜  {shared_number}{suffix}", Colors.BOLD, Colors.GREEN))
+            if not dedicated_numbers:
+                print_info("Outbound SMS omits an explicit sender; Pingram handles reply routing.")
     if home_channel:
         print_info("SMS is set as a Hermes home channel (cron and default proactive delivery).")
     else:

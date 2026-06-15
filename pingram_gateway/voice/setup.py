@@ -47,7 +47,7 @@ def setup_voice() -> None:
 
     from_email = (get_env_value("PINGRAM_FROM_EMAIL") or "").strip()
     if not from_email:
-        account_emails, _numbers = fetch_account_identities(api_key, region)
+        account_emails, _, _ = fetch_account_identities(api_key, region)
         if account_emails:
             from_email = account_emails[0]
 

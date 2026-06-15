@@ -3,7 +3,7 @@
 import asyncio
 import html as html_lib
 import logging
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from pingram_gateway.core.constants import DEFAULT_FROM_NAME, DEFAULT_NOTIFICATION_TYPE, PINGRAM_IMPORT, PINGRAM_PACKAGE
 from pingram_gateway.core.helpers import ensure_importable, text_to_html
@@ -32,19 +32,20 @@ async def pingram_send(api_key: str, region: str, body: Dict[str, Any]):
         return SendResult(success=False, error=str(e))
 
 
-def fetch_account_identities(api_key: str, region: str) -> Tuple[List[str], List[str]]:
+def fetch_account_identities(api_key: str, region: str) -> Tuple[List[str], List[str], Optional[str]]:
     try:
         import pingram  # noqa: F401
     except ImportError:
         if not ensure_importable(PINGRAM_IMPORT, PINGRAM_PACKAGE):
-            return [], []
+            return [], [], None
 
     try:
         from pingram import Pingram
 
-        async def _query() -> Tuple[List[str], List[str]]:
+        async def _query() -> Tuple[List[str], List[str], Optional[str]]:
             emails: List[str] = []
             numbers: List[str] = []
+            shared_number: Optional[str] = None
             async with Pingram(api_key=api_key, region=region) as client:
                 try:
                     resp = await client.addresses.addresses_list_addresses()
@@ -60,18 +61,17 @@ def fetch_account_identities(api_key: str, region: str) -> Tuple[List[str], List
                         number = getattr(num, "phone_number", None)
                         if number:
                             numbers.append(str(number).strip())
-                    if not numbers:
-                        shared = getattr(resp, "shared_number", None)
-                        if shared:
-                            numbers.append(str(shared).strip())
+                    shared = getattr(resp, "shared_number", None)
+                    if shared:
+                        shared_number = str(shared).strip() or None
                 except Exception:
                     logger.debug("Pingram: numbers.list failed", exc_info=True)
-            return emails, numbers
+            return emails, numbers, shared_number
 
         return asyncio.run(_query())
     except Exception:
         logger.debug("Pingram: account identity lookup failed", exc_info=True)
-        return [], []
+        return [], [], None
 
 
 def send_welcome_sms(api_key: str, region: str, number: str, *, from_sms: str = "") -> bool:
