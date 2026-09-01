@@ -1,7 +1,7 @@
 name: pingram
 label: Pingram
 kind: platform
-version: 1.0.0
+version: 1.0.1
 description: >
   Pingram gateway adapters for Hermes Agent. Registers three platforms —
   pingram-sms, pingram-email, and pingram-voice (alpha stub). SMS and Email

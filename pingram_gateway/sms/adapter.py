@@ -49,7 +49,7 @@ class PingramSmsAdapter(BasePlatformAdapter):
     def name(self) -> str:
         return "Pingram SMS"
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         if not self.shared.api_key:
             self._set_fatal_error("config_missing", "PINGRAM_API_KEY must be set", retryable=False)
             return False
@@ -63,7 +63,7 @@ class PingramSmsAdapter(BasePlatformAdapter):
         if not await ensure_runtime_deps():
             self._set_fatal_error("dependency_missing", "Pingram SDK or aiohttp not installed", retryable=False)
             return False
-        await PingramPollCoordinator.instance().attach_sms(self, self.shared)
+        await PingramPollCoordinator.instance().attach_sms(self, self.shared, is_reconnect=is_reconnect)
         self._mark_connected()
         seed_platform_directory(PLATFORM_SMS, self.config)
         return True

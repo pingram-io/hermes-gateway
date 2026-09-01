@@ -41,15 +41,19 @@ class PingramPollCoordinator:
         self._seen: Dict[str, float] = {}
         self._tasks: set = set()
 
-    async def attach_sms(self, adapter: "PingramSmsAdapter", config: SharedPingramConfig) -> None:
+    async def attach_sms(
+        self, adapter: "PingramSmsAdapter", config: SharedPingramConfig, *, is_reconnect: bool = False
+    ) -> None:
         self._sms = adapter
         self._config = config
-        await self._acquire()
+        await self._acquire(is_reconnect=is_reconnect)
 
-    async def attach_email(self, adapter: "PingramEmailAdapter", config: SharedPingramConfig) -> None:
+    async def attach_email(
+        self, adapter: "PingramEmailAdapter", config: SharedPingramConfig, *, is_reconnect: bool = False
+    ) -> None:
         self._email = adapter
         self._config = config
-        await self._acquire()
+        await self._acquire(is_reconnect=is_reconnect)
 
     async def detach_sms(self) -> None:
         self._sms = None
@@ -59,10 +63,13 @@ class PingramPollCoordinator:
         self._email = None
         await self._release()
 
-    async def _acquire(self) -> None:
+    async def _acquire(self, *, is_reconnect: bool = False) -> None:
         self._refs += 1
         if self._poll_task is None and self._config:
-            self._watermark_ms = int(time.time() * 1000)
+            # Cold start skips historical logs. Reconnect keeps the watermark so
+            # inbound that arrived during the outage is still delivered.
+            if not is_reconnect or self._watermark_ms <= 0:
+                self._watermark_ms = int(time.time() * 1000)
             self._poll_task = asyncio.create_task(self._poll_loop())
             logger.info(
                 "Pingram: polling logs.getLogs every %ss; no public endpoint required",
