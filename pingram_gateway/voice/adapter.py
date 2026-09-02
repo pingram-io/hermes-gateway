@@ -21,7 +21,10 @@ class PingramVoiceStubAdapter(BasePlatformAdapter):
     def name(self) -> str:
         return "Pingram Voice"
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
+        # Hermes GatewayRunner always forwards is_reconnect=...; rejecting it
+        # TypeErrors the reconnect watcher and leaves the platform offline.
+        del is_reconnect
         logger.info("Pingram Voice: %s", VOICE_BETA_MESSAGE)
         self._set_fatal_error("not_available", VOICE_BETA_MESSAGE, retryable=False)
         return False

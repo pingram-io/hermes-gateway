@@ -94,7 +94,14 @@ def _legacy_session_entries(platform_name: str) -> List[Dict[str, Any]]:
         logger.debug("Pingram directory: failed to read sessions.json", exc_info=True)
         return []
 
-    for session in data.values():
+    if not isinstance(data, dict):
+        return []
+
+    for key, session in data.items():
+        # Hermes writes a string "_README" sentinel into sessions.json.
+        # Keys starting with "_" and non-dict values are not session entries.
+        if str(key).startswith("_") or not isinstance(session, dict):
+            continue
         origin = session.get("origin") or {}
         if origin.get("platform") != _LEGACY_PLATFORM:
             continue
