@@ -55,8 +55,8 @@ def build_cli_delivery_note(context) -> str:
     lines = [
         "",
         "**Platform notes:** You are in the local Hermes CLI. When the user asks "
-        "you to text, email, or call them proactively, use send_message — not the himalaya "
-        "skill, IMAP/SMTP tools, or other mailbox CLIs.",
+        "you to text or email them, use send_message. Place a phone call only when "
+        "they explicitly asked you to call — never as a default reply.",
     ]
     if has_sms:
         if _has_home_channel(PLATFORM_SMS):
@@ -85,14 +85,15 @@ def build_cli_delivery_note(context) -> str:
     if has_voice:
         if _has_home_channel(PLATFORM_VOICE):
             lines.append(
-                '- Voice: send_message(target="pingram-voice", message="...") '
-                "(starts a Pingram Voice Agent call to the home number; message is a briefing, "
-                "not a TTS script)."
+                '- Voice: ONLY if the user explicitly asked to place a phone call, '
+                'send_message(target="pingram-voice", message="..."). '
+                "Never call in response to a call-ended report or as a default reply."
             )
         else:
             lines.append(
-                '- Voice: send_message(target="pingram-voice:+15551234567", message="...") '
-                "(Voice is not a home channel — include the recipient number; message is a briefing)."
+                '- Voice: ONLY if the user explicitly asked to place a phone call, '
+                'send_message(target="pingram-voice:+15551234567", message="..."). '
+                "Never call in response to a call-ended report or as a default reply."
             )
     lines.append(
         "- Do not load or use the himalaya skill for outbound delivery when Pingram is configured."

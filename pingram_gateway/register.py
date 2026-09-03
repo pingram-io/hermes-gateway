@@ -36,14 +36,14 @@ EMAIL_HINT = (
 )
 
 VOICE_HINT = (
-    "You start a live Pingram Voice Agent call via pingram-voice. Pingram hosts the "
-    "two-way conversation on the phone; your send_message text is a briefing for the "
-    "agent, not a script to read verbatim. When the call ends, you will receive a "
-    "Pingram Voice call-ended message with outcome and transcript — use that to know "
-    "whether they picked up and what was said. When the user asks you to call them, "
-    "use send_message with target='pingram-voice'. You can also use "
-    "'pingram-voice:+15551234567'. Do not use the CALL notification channel, Twilio, "
-    "or other voice providers."
+    "Pingram Voice places a real phone call. Use send_message target='pingram-voice' "
+    "ONLY when the user explicitly asked you to call someone. Never call as a default "
+    "reply, status update, cron delivery, or reaction to a [Pingram Voice call ended] "
+    "report — those reports are FYI (outcome + transcript). Reply to them in the current "
+    "chat or via email/SMS, not with another call. "
+    "send_message text is a briefing for Pingram's Voice Agent. "
+    "You can use 'pingram-voice:+15551234567' for a specific number. "
+    "Do not use the CALL notification channel, Twilio, or other voice providers."
 )
 
 
@@ -68,6 +68,10 @@ def _voice_env_enablement():
     seed = channel_env_seed("PINGRAM_VOICE_HOME_CHANNEL", "PINGRAM_VOICE_HOME_CHANNEL_NAME")
     if seed is None:
         return None
+    # Do not seed home_channel — that makes Voice a Hermes home/cron target and
+    # the agent will place calls for every proactive reply. Keep the env var for
+    # resolving an explicit pingram-voice send.
+    seed.pop("home_channel", None)
     allowed = os.getenv("PINGRAM_VOICE_ALLOWED_USERS", "").strip()
     if allowed:
         seed["allowed_users"] = allowed
@@ -153,7 +157,6 @@ def register(ctx):
         setup_fn=setup_voice,
         allowed_users_env="PINGRAM_VOICE_ALLOWED_USERS",
         allow_all_env="PINGRAM_ALLOW_ALL_USERS",
-        cron_deliver_env_var="PINGRAM_VOICE_HOME_CHANNEL",
         standalone_sender_fn=standalone_send_voice,
         emoji="📞",
         pii_safe=True,

@@ -120,7 +120,7 @@ def format_call_report(call: Any, *, expired: bool = False) -> str:
     except (TypeError, ValueError):
         duration_s = None
 
-    lines = ["[Pingram Voice call ended]"]
+    lines = ["[Pingram Voice call ended — FYI only. Do not place another call unless the user asked.]"]
     if to_number:
         lines.append(f"To: {to_number}")
     lines.append(f"Status: {status}")
