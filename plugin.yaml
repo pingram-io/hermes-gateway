@@ -1,7 +1,7 @@
 name: pingram
 label: Pingram
 kind: platform
-version: 1.1.8
+version: 1.1.9
 description: >
   Pingram gateway adapters for Hermes Agent. Registers three platforms —
   pingram-sms, pingram-email, and pingram-voice. SMS and Email receive inbound
@@ -44,8 +44,8 @@ optional_env:
     prompt: "Voice allowed numbers"
     password: false
   - name: PINGRAM_VOICE_HOME_CHANNEL
-    description: "Default number for proactive Voice Agent calls and cron (E.164)."
-    prompt: "Voice home channel"
+    description: "Unused. Voice is never a Hermes home channel (startup/replies would place calls)."
+    prompt: "Voice home channel (leave blank)"
     password: false
   - name: PINGRAM_VOICE_AGENT_ID
     description: "Voice Agent created in the Pingram app. Blank uses the first agent on the account."

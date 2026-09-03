@@ -9,14 +9,11 @@ from pingram_gateway.core.setup_common import (
     enable_gateway_platform,
     existing_allow_all_default,
     prompt_allow_all_senders,
-    prompt_home_channel_sms,
     prompt_region_and_api_key,
     prompt_setup_mode,
     prompt_sms_allowlist,
     prompt_sms_phone,
-    prompt_use_as_home_channel,
     save_allowlist_env,
-    save_home_channel_env,
     seed_display_overrides,
     set_gateway_home_channel,
     voice_platform_configured,
@@ -92,7 +89,6 @@ def setup_voice() -> None:
     advanced = mode == "advanced"
 
     print()
-    home_channel: Optional[str] = None
     welcome_to: Optional[str] = None
 
     if not advanced:
@@ -103,10 +99,6 @@ def setup_voice() -> None:
         save_allowlist_env("PINGRAM_VOICE_ALLOWED_USERS", [contact])
         save_env_value("PINGRAM_ALLOW_ALL_USERS", "false")
         welcome_to = contact
-        save_home_channel_env("PINGRAM_VOICE_HOME_CHANNEL", contact)
-        # Explicit pingram-voice sends use the env number; do not make Voice a
-        # Hermes home/cron channel or every proactive reply will ring the phone.
-        home_channel = None
     else:
         allow_all = prompt_allow_all_senders(default=existing_allow_all_default())
         if allow_all:
@@ -116,7 +108,6 @@ def setup_voice() -> None:
                 label="Phone number to call (E.164, e.g. +15005005000)",
                 default=default_contact,
             )
-            delivery_choices = [contact]
             welcome_to = contact
         else:
             save_env_value("PINGRAM_ALLOW_ALL_USERS", "false")
@@ -124,29 +115,21 @@ def setup_voice() -> None:
             delivery_choices = prompt_sms_allowlist(default=default_allowed or default_contact)
             save_allowlist_env("PINGRAM_VOICE_ALLOWED_USERS", delivery_choices)
             welcome_to = delivery_choices[0]
-        if prompt_use_as_home_channel(channel_label="Voice", default=False):
-            if len(delivery_choices) == 1:
-                home_channel = delivery_choices[0]
-            else:
-                home_channel = prompt_home_channel_sms(
-                    allowed=delivery_choices,
-                    default=existing_home or delivery_choices[0],
-                )
-        save_home_channel_env("PINGRAM_VOICE_HOME_CHANNEL", home_channel or welcome_to)
+
+    if welcome_to:
+        save_env_value("PINGRAM_VOICE_DEFAULT_TO", welcome_to)
+    save_env_value("PINGRAM_VOICE_HOME_CHANNEL", "")
+    set_gateway_home_channel(PLATFORM_VOICE, None)
 
     seed_display_overrides(load_config, save_config, PLATFORM_VOICE)
     enable_gateway_platform(load_config, save_config, PLATFORM_VOICE)
-    set_gateway_home_channel(PLATFORM_VOICE, home_channel)
 
     print()
     print_success("Pingram Voice configured!")
-    if home_channel:
-        print_info("Voice is set as a Hermes home channel — cron and default proactive delivery will place calls.")
-    else:
-        print_info(
-            "Voice is not a Hermes home channel. Hermes will only call when you explicitly "
-            "ask it to (send_message to pingram-voice)."
-        )
+    print_info(
+        "Voice is not a Hermes home channel. Hermes will only call when you explicitly "
+        "ask it to (send_message to pingram-voice:+1…)."
+    )
     print_info(f"Calls use the Pingram app Voice Agent {agent_id}.")
 
     if welcome_to and prompt_yes_no("Place a short test Voice Agent call now?", False):

@@ -7,7 +7,7 @@ import os
 from typing import Any, Dict, Optional
 
 from gateway.config import Platform
-from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
+from gateway.platforms.base import BasePlatformAdapter, SendResult
 
 from pingram_gateway.core.config import load_shared_config, load_voice_allowlist, voice_agent_id, voice_configured
 from pingram_gateway.core.constants import PLATFORM_VOICE
@@ -92,6 +92,10 @@ class PingramVoiceAdapter(BasePlatformAdapter):
         number = normalize_voice_chat_id(chat_id) or normalize_phone_e164(chat_id)
         if not is_plausible_sms_number(number):
             return SendResult(success=False, error=f"Invalid voice recipient: {redact_user(number)}")
+        blocked = _refuse_auto_voice_call(content, reply_to)
+        if blocked:
+            logger.warning("Pingram Voice: refusing auto-call to %s (%s)", redact_user(number), blocked)
+            return SendResult(success=False, error=blocked)
         briefing = _briefing_text(content)
         if not briefing:
             return SendResult(success=False, error="Empty voice briefing")
@@ -138,29 +142,15 @@ class PingramVoiceAdapter(BasePlatformAdapter):
             mark_done(tracking_id)
 
     async def _inject_report(self, chat_id: str, tracking_id: str, text: str) -> None:
-        if not self._message_handler:
-            return
-        number = normalize_phone_e164(chat_id) or chat_id
-        source = self.build_source(
-            chat_id=number,
-            chat_name=redact_user(number),
-            chat_type="dm",
-            user_id=number,
-            user_name=redact_user(number),
+        # Do not handle_message — that is an inbound Voice turn, and the
+        # gateway replies on the same platform (another phone call). Including
+        # the ESTOP "work is on hold" notice.
+        logger.info(
+            "Pingram Voice: call report %s for %s (not injected as inbound)\n%s",
+            tracking_id,
+            redact_user(chat_id),
+            text,
         )
-        event = MessageEvent(
-            text=text,
-            message_type=MessageType.TEXT,
-            source=source,
-            message_id=f"voice-report:{tracking_id}",
-            timestamp=datetime.datetime.now(),
-        )
-        try:
-            await self.handle_message(event)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.exception("Pingram Voice: failed to inject call report %s", tracking_id)
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         pass
@@ -187,6 +177,25 @@ class PingramVoiceAdapter(BasePlatformAdapter):
         )
 
 
+_AUTO_CALL_MARKERS = (
+    "work is on hold",
+    "emergency stop",
+    "gateway turn paused",
+    "[pingram voice call ended",
+    "startup notification",
+)
+
+
+def _refuse_auto_voice_call(content: str, reply_to: Optional[str]) -> Optional[str]:
+    if reply_to:
+        return "Voice is not a reply channel — refusing to place a call"
+    text = (content or "").lower()
+    for marker in _AUTO_CALL_MARKERS:
+        if marker in text:
+            return "Refusing to place a Voice call for a gateway system notice"
+    return None
+
+
 def _briefing_text(content: str) -> str:
     raw = (content or "").strip()
     if not raw:
@@ -209,10 +218,13 @@ async def standalone_send_voice(pconfig, chat_id: str, message: str, *, thread_i
 
     resolved = normalize_voice_chat_id(chat_id)
     if not resolved:
-        home = os.getenv("PINGRAM_VOICE_HOME_CHANNEL", "").strip()
-        resolved = normalize_voice_chat_id(home)
+        default_to = (
+            os.getenv("PINGRAM_VOICE_DEFAULT_TO", "").strip()
+            or os.getenv("PINGRAM_VOICE_ALLOWED_USERS", "").split(",")[0].strip()
+        )
+        resolved = normalize_voice_chat_id(default_to)
     if not resolved:
-        return {"error": "Pingram Voice: no recipient. Use target 'pingram-voice' or set PINGRAM_VOICE_HOME_CHANNEL."}
+        return {"error": "Pingram Voice: no recipient. Use target 'pingram-voice:+15551234567'."}
 
     adapter = PingramVoiceAdapter(pconfig)
     briefing = message or ""

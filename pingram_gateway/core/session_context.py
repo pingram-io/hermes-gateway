@@ -12,7 +12,7 @@ def _has_home_channel(platform_name: str) -> bool:
     if platform_name == PLATFORM_EMAIL:
         return bool(os.getenv("PINGRAM_EMAIL_HOME_CHANNEL", "").strip())
     if platform_name == PLATFORM_VOICE:
-        return bool(os.getenv("PINGRAM_VOICE_HOME_CHANNEL", "").strip())
+        return False
     return False
 
 
@@ -83,18 +83,11 @@ def build_cli_delivery_note(context) -> str:
                 "channel, so include the recipient address; use HTML, not markdown."
             )
     if has_voice:
-        if _has_home_channel(PLATFORM_VOICE):
-            lines.append(
-                '- Voice: ONLY if the user explicitly asked to place a phone call, '
-                'send_message(target="pingram-voice", message="..."). '
-                "Never call in response to a call-ended report or as a default reply."
-            )
-        else:
-            lines.append(
-                '- Voice: ONLY if the user explicitly asked to place a phone call, '
-                'send_message(target="pingram-voice:+15551234567", message="..."). '
-                "Never call in response to a call-ended report or as a default reply."
-            )
+        lines.append(
+            '- Voice: ONLY if the user explicitly asked to place a phone call, '
+            'send_message(target="pingram-voice:+15551234567", message="..."). '
+            "Never call as a reply, status update, or after a call ends."
+        )
     lines.append(
         "- Do not load or use the himalaya skill for outbound delivery when Pingram is configured."
     )

@@ -135,15 +135,13 @@ def install_send_message_parsers() -> None:
                     display = "Available messaging targets:\n\n" + supplement
                 else:
                     display = display.rstrip() + "\n\n" + supplement
-                from pingram_gateway.core.config import email_home_channel, sms_home_channel, voice_home_channel
+                from pingram_gateway.core.config import email_home_channel, sms_home_channel
 
                 hints = []
                 if sms_home_channel(config):
                     hints.append('Use "pingram-sms" alone to send to the SMS home channel.')
                 if email_home_channel(config):
                     hints.append('Use "pingram-email" alone to send to the Email home channel.')
-                if voice_home_channel(config):
-                    hints.append('Use "pingram-voice" alone to call the Voice home channel.')
                 if hints:
                     display = display.rstrip() + "\n\n" + " ".join(hints)
             return json.dumps({"targets": display})
@@ -159,7 +157,7 @@ def install_send_message_parsers() -> None:
             args["target"] = target
 
         platform_name = target.split(":", 1)[0].strip().lower() if target else ""
-        if platform_name in {PLATFORM_SMS, PLATFORM_EMAIL, PLATFORM_VOICE}:
+        if platform_name in {PLATFORM_SMS, PLATFORM_EMAIL}:
             try:
                 from gateway.config import load_gateway_config
 

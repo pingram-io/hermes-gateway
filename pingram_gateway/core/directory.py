@@ -35,8 +35,9 @@ def home_from_env(platform_name: str) -> Optional[Dict[str, str]]:
         chat_id = os.getenv("PINGRAM_SMS_HOME_CHANNEL", "").strip()
         name = os.getenv("PINGRAM_SMS_HOME_CHANNEL_NAME", "").strip() or "Home"
     elif platform_name == PLATFORM_VOICE:
-        chat_id = os.getenv("PINGRAM_VOICE_HOME_CHANNEL", "").strip()
-        name = os.getenv("PINGRAM_VOICE_HOME_CHANNEL_NAME", "").strip() or "Home"
+        # Voice must never be a Hermes home channel — startup/ESTOP/replies
+        # would place phone calls.
+        return None
     elif platform_name == PLATFORM_EMAIL:
         chat_id = os.getenv("PINGRAM_EMAIL_HOME_CHANNEL", "").strip()
         name = os.getenv("PINGRAM_EMAIL_HOME_CHANNEL_NAME", "").strip() or "Home"
@@ -61,7 +62,7 @@ def home_from_config(config, platform_name: str) -> Optional[Dict[str, str]]:
 
 def ensure_home_channel(config, platform_name: str) -> None:
     """Ensure gateway config has a home channel (env fallback, Weixin-style)."""
-    if platform_name not in {PLATFORM_SMS, PLATFORM_EMAIL, PLATFORM_VOICE}:
+    if platform_name not in {PLATFORM_SMS, PLATFORM_EMAIL}:
         return
     try:
         from gateway.config import HomeChannel, Platform
