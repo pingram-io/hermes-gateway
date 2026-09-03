@@ -1,7 +1,8 @@
 """Default Pingram Voice Agent spec for Hermes outbound calls.
 
-Matches the dashboard playground default (s2s openai:gpt-realtime, voice marin).
-The Hermes send_message text is a briefing for the live agent — not TTS of a script.
+Matches the dashboard playground default (s2s openai:gpt-realtime, voice marin),
+with stay-on-the-line defaults so Hermes-placed calls are not dropped by AMD or
+the built-in end_call tool.
 """
 
 from __future__ import annotations
@@ -11,13 +12,17 @@ from typing import Any, Dict
 
 # Dashboard DEFAULT_AGENT_SPEC / DEFAULT_S2S_MODEL (voiceAgentOptions.ts).
 _DEFAULT_INSTRUCTIONS = (
-    "You are Hermes, a helpful phone assistant. Keep your responses concise and "
-    "conversational — this is a voice call, not a text chat.\n\n"
-    "- Keep responses to 1-2 sentences when possible\n"
-    "- Be friendly and natural"
+    "You are Hermes, a helpful phone assistant on a live voice call.\n\n"
+    "- Deliver the call briefing in your first spoken turn. Do not open with "
+    "\"how can I help\" until you have done that.\n"
+    "- Then stay on the line and wait for the person to speak. Do not hang up "
+    "after the greeting or after delivering the briefing.\n"
+    "- Keep later responses to 1-2 sentences. Be friendly and natural."
 )
 
-_DEFAULT_OPENER = "Hi, this is your Hermes assistant calling. How can I help today?"
+_DEFAULT_OPENER = "Hi, this is your Hermes assistant calling."
+
+_MAX_OPENER_CHARS = 1200
 
 DEFAULT_HERMES_VOICE_SPEC: Dict[str, Any] = {
     "name": "Hermes",
@@ -29,7 +34,7 @@ DEFAULT_HERMES_VOICE_SPEC: Dict[str, Any] = {
     "outbound": {
         "firstAction": "speak",
         "opener": _DEFAULT_OPENER,
-        "voicemailAction": "hangup",
+        "voicemailAction": "continue",
     },
     "model": {
         "mode": "s2s",
@@ -45,14 +50,12 @@ DEFAULT_HERMES_VOICE_SPEC: Dict[str, Any] = {
         "minEndOfTurnSilenceMs": 500,
         "allowInterruptions": True,
         "minInterruptionDurationMs": 300,
-        "silenceTimeoutSeconds": 30,
+        "silenceTimeoutSeconds": 90,
         "maxCallLengthSeconds": 600,
-        "agentCanEndCall": True,
+        "agentCanEndCall": False,
     },
     "compliance": {"recordingEnabled": True},
 }
-
-_MAX_SPOKEN_OPENER_CHARS = 400
 
 
 def default_spec_dict() -> Dict[str, Any]:
@@ -60,9 +63,10 @@ def default_spec_dict() -> Dict[str, Any]:
 
 
 def overlay_briefing(spec: Dict[str, Any], briefing: str) -> Dict[str, Any]:
-    """Copy a spec and attach the Hermes message as this call's task."""
+    """Copy a spec and attach the Hermes message as this call's spoken task."""
     out = copy.deepcopy(spec)
     text = (briefing or "").strip()
+    _apply_stay_on_line(out)
     if not text:
         return out
 
@@ -70,26 +74,32 @@ def overlay_briefing(spec: Dict[str, Any], briefing: str) -> Dict[str, Any]:
     out["instructions"] = (
         f"{instructions}\n\n---\n"
         "Hermes started this outbound call with the following briefing. "
-        "Carry it out conversationally. Do not read the briefing verbatim unless "
-        "it is clearly a scripted greeting.\n\n"
+        "Your opener should already be speaking it. After that, stay on the "
+        "line and wait for a reply. Do not hang up or ask to end the call "
+        "until the person is clearly finished.\n\n"
         f"{text}"
     )
 
     outbound = dict(out.get("outbound") or {})
-    if _looks_like_spoken_opener(text):
-        outbound["opener"] = text
-        outbound.setdefault("firstAction", "speak")
-        outbound.setdefault("voicemailAction", "hangup")
-    elif not outbound.get("opener"):
-        outbound["opener"] = _DEFAULT_OPENER
-        outbound.setdefault("firstAction", "speak")
-        outbound.setdefault("voicemailAction", "hangup")
+    outbound["firstAction"] = "speak"
+    outbound["opener"] = _spoken_opener(text)
+    outbound["voicemailAction"] = "continue"
     out["outbound"] = outbound
     return out
 
 
-def _looks_like_spoken_opener(text: str) -> bool:
-    if len(text) > _MAX_SPOKEN_OPENER_CHARS:
-        return False
-    first = text.lstrip()[:12].lower()
-    return first.startswith(("hi", "hey", "hello", "good "))
+def _apply_stay_on_line(spec: Dict[str, Any]) -> None:
+    conversation = dict(spec.get("conversation") or {})
+    conversation["agentCanEndCall"] = False
+    try:
+        silence = int(conversation.get("silenceTimeoutSeconds") or 0)
+    except (TypeError, ValueError):
+        silence = 0
+    conversation["silenceTimeoutSeconds"] = max(silence, 90)
+    spec["conversation"] = conversation
+
+
+def _spoken_opener(text: str) -> str:
+    if len(text) <= _MAX_OPENER_CHARS:
+        return text
+    return text[: _MAX_OPENER_CHARS - 1].rstrip() + "…"
