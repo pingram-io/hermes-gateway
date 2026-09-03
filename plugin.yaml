@@ -1,13 +1,14 @@
 name: pingram
 label: Pingram
 kind: platform
-version: 1.1.2
+version: 1.1.3
 description: >
   Pingram gateway adapters for Hermes Agent. Registers three platforms —
   pingram-sms, pingram-email, and pingram-voice. SMS and Email receive inbound
   messages by polling Pingram's logs API. Voice starts outbound Pingram Voice
-  Agent calls (POST /voice/call with an agent spec). All three send through the
-  Pingram Python SDK.
+  Agent calls (POST /voice/call with an agent spec). Finished calls Hermes placed
+  are polled for outcome and transcript. All three send through the Pingram
+  Python SDK.
 author: Pingram
 optional_env:
   - name: PINGRAM_FROM_SMS

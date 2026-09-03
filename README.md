@@ -13,6 +13,8 @@ registers three Hermes platforms:
 SMS and email inbound messages are received by **polling** Pingram's logs API — no
 public endpoint or webhook is required. Voice is outbound: Hermes starts a Voice
 Agent call with a briefing; Pingram hosts the live conversation on the phone.
+When that call ends, the gateway polls the Voice calls API and injects the
+outcome and transcript back into Hermes (only for calls Hermes placed).
 
 ```mermaid
 flowchart LR
@@ -26,6 +28,8 @@ flowchart LR
   agent -->|"send_message briefing"| voice["pingram-voice"]
   voice -->|"POST /voice/call"| pingram
   pingram -->|"live Voice Agent"| human
+  pingram -->|"finished call + transcript"| voice
+  voice --> agent
 ```
 
 ## Install
@@ -117,10 +121,13 @@ Explicit recipients also work: `pingram-sms:+15551234567`, `pingram-email:you@ex
 
 `pingram-voice` places an outbound [Voice Agent](https://www.pingram.io) call via
 `POST /voice/call`. The `send_message` text is a briefing for the live agent
-(instructions + optional spoken opener), not a one-way TTS notification.
+(instructions + spoken opener), not a one-way TTS notification. After the call
+ends, Hermes gets a `[Pingram Voice call ended]` message with outcome and
+transcript so it knows whether they picked up and what was said.
 
 Someone calling a number bound to a Voice Agent in the Pingram dashboard talks to
-that agent directly — Hermes does not sit in the live audio path.
+that agent directly — Hermes does not sit in the live audio path and does not
+see inbound rings.
 
 ## Security
 
@@ -135,6 +142,7 @@ that agent directly — Hermes does not sit in the live audio path.
 - Outbound SMS cannot attach local files (link-only fallback)
 - Inbound delivery delayed by up to `PINGRAM_POLL_INTERVAL` seconds (default 15)
 - Voice is outbound Voice Agent calls — Hermes is not in the live media path
+- Voice transcripts arrive after hangup (poll interval), and only for calls Hermes placed
 
 ## License
 

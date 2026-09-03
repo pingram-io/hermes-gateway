@@ -1,12 +1,13 @@
 """Pingram Voice Agent adapter — outbound conversational calls via POST /voice/call."""
 
 import asyncio
+import datetime
 import logging
 import os
 from typing import Any, Dict, Optional
 
 from gateway.config import Platform
-from gateway.platforms.base import BasePlatformAdapter, SendResult
+from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
 
 from pingram_gateway.core.config import load_shared_config, load_voice_allowlist, voice_agent_id, voice_configured
 from pingram_gateway.core.constants import PLATFORM_VOICE
@@ -20,7 +21,8 @@ from pingram_gateway.core.helpers import (
     normalize_voice_chat_id,
     redact_user,
 )
-from pingram_gateway.core.send import pingram_place_voice_call
+from pingram_gateway.core.send import pingram_get_voice_call, pingram_place_voice_call
+from pingram_gateway.voice.watch import PENDING_MAX_AGE_SECONDS, format_call_report, list_pending, mark_done, watch_call
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +31,7 @@ class PingramVoiceAdapter(BasePlatformAdapter):
     """Places outbound Pingram Voice Agent calls (two-way AI on the phone).
 
     Hermes starts the call with a briefing; Pingram hosts the live conversation.
+    Finished calls Hermes placed are polled and injected as a transcript message.
     This is not the one-way CALL notification channel (`send({ call })`).
     """
 
@@ -37,6 +40,7 @@ class PingramVoiceAdapter(BasePlatformAdapter):
         self.shared = load_shared_config(config)
         self._allowed = load_voice_allowlist(config)
         self._agent_id = voice_agent_id(config)
+        self._poll_task: Optional[asyncio.Task] = None
 
     @property
     def name(self) -> str:
@@ -59,9 +63,19 @@ class PingramVoiceAdapter(BasePlatformAdapter):
             return False
         self._mark_connected()
         seed_platform_directory(PLATFORM_VOICE, self.config)
+        if self._poll_task is None or self._poll_task.done():
+            self._poll_task = asyncio.create_task(self._poll_loop())
         return True
 
     async def disconnect(self) -> None:
+        task = self._poll_task
+        self._poll_task = None
+        if task is not None:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
         self._mark_disconnected()
 
     def is_sender_allowed(self, sender: Any) -> bool:
@@ -82,13 +96,72 @@ class PingramVoiceAdapter(BasePlatformAdapter):
         briefing = _briefing_text(content)
         if not briefing:
             return SendResult(success=False, error="Empty voice briefing")
-        return await pingram_place_voice_call(
+        result = await pingram_place_voice_call(
             self.shared.api_key,
             self.shared.region,
             number,
             briefing,
             agent_id=self._agent_id or None,
         )
+        if result.success and result.message_id:
+            watch_call(str(result.message_id), number)
+        return result
+
+    async def _poll_loop(self) -> None:
+        interval = max(3, int(self.shared.poll_interval or 15))
+        logger.info("Pingram Voice: polling finished calls every %ss", interval)
+        try:
+            while True:
+                await self._poll_once()
+                await asyncio.sleep(interval)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Pingram Voice: call poll loop crashed")
+
+    async def _poll_once(self) -> None:
+        now = datetime.datetime.now().timestamp()
+        for tracking_id, chat_id, placed_at in list_pending():
+            expired = now - placed_at > PENDING_MAX_AGE_SECONDS
+            if expired:
+                text = format_call_report(None, expired=True)
+                await self._inject_report(chat_id, tracking_id, text)
+                mark_done(tracking_id)
+                continue
+            call = await pingram_get_voice_call(self.shared.api_key, self.shared.region, tracking_id)
+            if call is None:
+                continue
+            status = str(getattr(call, "status", "") or "").lower()
+            if status == "active":
+                continue
+            text = format_call_report(call)
+            await self._inject_report(chat_id, tracking_id, text)
+            mark_done(tracking_id)
+
+    async def _inject_report(self, chat_id: str, tracking_id: str, text: str) -> None:
+        if not self._message_handler:
+            return
+        number = normalize_phone_e164(chat_id) or chat_id
+        source = self.build_source(
+            chat_id=number,
+            chat_name=redact_user(number),
+            chat_type="dm",
+            user_id=number,
+            user_name=redact_user(number),
+        )
+        event = MessageEvent(
+            text=text,
+            message_type=MessageType.TEXT,
+            source=source,
+            message_id=f"voice-report:{tracking_id}",
+            timestamp=datetime.datetime.now(),
+        )
+        try:
+            await self.handle_message(event)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Pingram Voice: failed to inject call report %s", tracking_id)
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         pass

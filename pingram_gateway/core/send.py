@@ -187,6 +187,24 @@ async def pingram_place_voice_call(
         return SendResult(success=False, error=str(e))
 
 
+async def pingram_get_voice_call(api_key: str, region: str, tracking_id: str):
+    """Fetch a Voice call record, or None if it is not ready / not found."""
+    tid = (tracking_id or "").strip()
+    if not tid:
+        return None
+    try:
+        from pingram import Pingram
+    except ImportError:
+        return None
+    try:
+        async with Pingram(api_key=api_key, region=region) as client:
+            response = await client.voice.voice_get_call(tid)
+        return getattr(response, "call", None)
+    except Exception:
+        logger.debug("Pingram Voice: get call %s failed", tid, exc_info=True)
+        return None
+
+
 def fetch_voice_agents(api_key: str, region: str) -> List[Dict[str, str]]:
     try:
         import pingram  # noqa: F401

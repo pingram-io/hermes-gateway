@@ -38,8 +38,10 @@ EMAIL_HINT = (
 VOICE_HINT = (
     "You start a live Pingram Voice Agent call via pingram-voice. Pingram hosts the "
     "two-way conversation on the phone; your send_message text is a briefing for the "
-    "agent, not a script to read verbatim. When the user asks you to call them, use "
-    "send_message with target='pingram-voice'. You can also use "
+    "agent, not a script to read verbatim. When the call ends, you will receive a "
+    "Pingram Voice call-ended message with outcome and transcript — use that to know "
+    "whether they picked up and what was said. When the user asks you to call them, "
+    "use send_message with target='pingram-voice'. You can also use "
     "'pingram-voice:+15551234567'. Do not use the CALL notification channel, Twilio, "
     "or other voice providers."
 )
