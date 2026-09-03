@@ -41,7 +41,7 @@ DEFAULT_HERMES_VOICE_SPEC: Dict[str, Any] = {
         "model": "openai:gpt-realtime",
         "voiceId": "marin",
         "temperature": 0.8,
-        "maxTokens": 250,
+        "maxTokens": 4096,
     },
     "tools": [],
     "variables": [],
@@ -97,6 +97,14 @@ def _apply_stay_on_line(spec: Dict[str, Any]) -> None:
         silence = 0
     conversation["silenceTimeoutSeconds"] = max(silence, 90)
     spec["conversation"] = conversation
+
+    model = dict(spec.get("model") or {})
+    try:
+        max_tokens = int(model.get("maxTokens") or 0)
+    except (TypeError, ValueError):
+        max_tokens = 0
+    model["maxTokens"] = max(max_tokens, 4096)
+    spec["model"] = model
 
 
 def _spoken_opener(text: str) -> str:
