@@ -120,11 +120,12 @@ Explicit recipients also work: `pingram-sms:+15551234567`, `pingram-email:you@ex
 ## Voice
 
 `pingram-voice` places an outbound [Voice Agent](https://www.pingram.io) call via
-`POST /voice/call`, using the agent saved in the Pingram dashboard (model, voice,
-temperature, tools). The `send_message` text is a briefing for that agent
-(instructions + spoken opener), not a one-way TTS notification. After the call
-ends, Hermes gets a `[Pingram Voice call ended]` message with outcome and
-transcript so it knows whether they picked up and what was said.
+`POST /voice/call`. It loads the agent saved in the Pingram dashboard — model,
+voice, temperature, tokens, hang-up, voicemail, tools — and only overlays a
+briefing (`send_message` text as instructions + spoken opener). There is no
+bundled Hermes spec. After the call ends, Hermes gets a
+`[Pingram Voice call ended]` message with outcome and transcript so it knows
+whether they picked up and what was said.
 
 Someone calling a number bound to a Voice Agent in the Pingram dashboard talks to
 that agent directly — Hermes does not sit in the live audio path and does not

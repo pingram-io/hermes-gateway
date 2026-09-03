@@ -166,10 +166,20 @@ async def pingram_place_voice_call(
     try:
         async with Pingram(api_key=api_key, region=region) as client:
             spec_dict, saved_id = await _resolve_voice_agent_spec(client, agent_id)
+            if not spec_dict or not saved_id:
+                return SendResult(
+                    success=False,
+                    error=(
+                        "No Pingram Voice Agent found. Create one in the Pingram dashboard, "
+                        "then set PINGRAM_VOICE_AGENT_ID or re-run hermes setup gateway."
+                    ),
+                )
             spec_dict = overlay_briefing(spec_dict, briefing)
-            body: Dict[str, Any] = {"phoneNumber": phone_number, "spec": spec_dict}
-            if saved_id:
-                body["agentId"] = saved_id
+            body: Dict[str, Any] = {
+                "phoneNumber": phone_number,
+                "spec": spec_dict,
+                "agentId": saved_id,
+            }
             request = VoiceCallRequest.from_dict(body)
             response = await client.voice.voice_call(request)
         return SendResult(success=True, message_id=getattr(response, "tracking_id", None))
@@ -211,10 +221,10 @@ def _spec_to_dict(spec: Any) -> Optional[Dict[str, Any]]:
     return None
 
 
-async def _resolve_voice_agent_spec(client, preferred_id: Optional[str]) -> Tuple[Dict[str, Any], Optional[str]]:
-    """Load a saved Pingram Voice Agent spec; bundled Hermes spec is fallback only."""
-    from pingram_gateway.voice.spec import default_spec_dict
-
+async def _resolve_voice_agent_spec(
+    client, preferred_id: Optional[str]
+) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """Load a saved Pingram Voice Agent spec. No bundled fallback."""
     wanted = (preferred_id or "").strip() or None
     if wanted:
         try:
@@ -240,8 +250,8 @@ async def _resolve_voice_agent_spec(client, preferred_id: Optional[str]) -> Tupl
     except Exception:
         logger.debug("Pingram Voice: list agents failed", exc_info=True)
 
-    logger.info("Pingram Voice: no saved agent, using bundled Hermes spec")
-    return default_spec_dict(), None
+    logger.warning("Pingram Voice: no saved Voice Agent on this account")
+    return None, None
 
 
 def fetch_voice_agents(api_key: str, region: str) -> List[Dict[str, str]]:

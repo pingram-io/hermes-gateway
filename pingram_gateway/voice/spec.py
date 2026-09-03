@@ -1,7 +1,7 @@
-"""Fallback Voice Agent spec when the Pingram account has no saved agents.
+"""Attach a Hermes briefing to a Pingram Voice Agent spec.
 
-Matches the dashboard playground default (s2s openai:gpt-realtime, voice marin).
-Saved-agent calls use the Pingram spec as-is; Hermes only overlays the briefing.
+Model, voice, tokens, hang-up, voicemail, and conversation settings come from
+the saved Pingram agent — this module does not define them.
 """
 
 from __future__ import annotations
@@ -9,62 +9,11 @@ from __future__ import annotations
 import copy
 from typing import Any, Dict
 
-# Dashboard DEFAULT_AGENT_SPEC / DEFAULT_S2S_MODEL (voiceAgentOptions.ts).
-_DEFAULT_INSTRUCTIONS = (
-    "You are Hermes, a helpful phone assistant on a live voice call.\n\n"
-    "- Deliver the call briefing in your first spoken turn. Do not open with "
-    "\"how can I help\" until you have done that.\n"
-    "- Keep later responses to 1-2 sentences. Be friendly and natural."
-)
-
-_DEFAULT_OPENER = "Hi, this is your Hermes assistant calling."
-
 _MAX_OPENER_CHARS = 1200
-
-DEFAULT_HERMES_VOICE_SPEC: Dict[str, Any] = {
-    "name": "Hermes",
-    "instructions": _DEFAULT_INSTRUCTIONS,
-    "inbound": {
-        "firstAction": "speak",
-        "greeting": "Hi, this is Hermes. How can I help you today?",
-    },
-    "outbound": {
-        "firstAction": "speak",
-        "opener": _DEFAULT_OPENER,
-        "voicemailAction": "hangup",
-    },
-    "model": {
-        "mode": "s2s",
-        "model": "openai:gpt-realtime",
-        "voiceId": "marin",
-        "temperature": 0.8,
-        "maxTokens": 250,
-    },
-    "tools": [],
-    "variables": [],
-    "conversation": {
-        "turnDetection": "semantic",
-        "minEndOfTurnSilenceMs": 500,
-        "allowInterruptions": True,
-        "minInterruptionDurationMs": 300,
-        "silenceTimeoutSeconds": 30,
-        "maxCallLengthSeconds": 600,
-        "agentCanEndCall": True,
-    },
-    "compliance": {"recordingEnabled": True},
-}
-
-
-def default_spec_dict() -> Dict[str, Any]:
-    return copy.deepcopy(DEFAULT_HERMES_VOICE_SPEC)
 
 
 def overlay_briefing(spec: Dict[str, Any], briefing: str) -> Dict[str, Any]:
-    """Copy a spec and attach the Hermes message as this call's spoken task.
-
-    Does not change model, voice, tokens, hang-up, voicemail, or conversation
-    settings — those come from the Pingram Voice Agent.
-    """
+    """Copy a Pingram agent spec and attach this call's spoken task."""
     out = copy.deepcopy(spec)
     text = (briefing or "").strip()
     if not text:

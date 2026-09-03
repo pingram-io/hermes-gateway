@@ -114,9 +114,7 @@ def setup_voice() -> None:
         agent_id = agents[0]["agent_id"]
         print_info(f"Using your Pingram Voice Agent: {agents[0]['name']} ({agent_id})")
     elif agents:
-        labels = [f"{a['name']} ({a['agent_id']})" for a in agents] + [
-            "Bundled Hermes spec (ignore saved Pingram agents)"
-        ]
+        labels = [f"{a['name']} ({a['agent_id']})" for a in agents]
         default_idx = 0
         if existing_agent:
             for i, agent in enumerate(agents):
@@ -124,13 +122,11 @@ def setup_voice() -> None:
                     default_idx = i
                     break
         choice = prompt_choice("Voice Agent for outbound calls", labels, default_idx)
-        if choice < len(agents):
-            agent_id = agents[choice]["agent_id"]
+        agent_id = agents[choice]["agent_id"]
     else:
-        print_info(
-            "No saved Voice Agents on this account — outbound calls will use a bundled "
-            "Hermes spec. Create an agent in the Pingram dashboard to control voice, "
-            "model, and temperature from the app."
+        print_warning(
+            "No saved Voice Agents on this account. Create one in the Pingram dashboard "
+            "(model, voice, hang-up, tokens) before Hermes can place calls."
         )
         if existing_agent:
             save_env_value("PINGRAM_VOICE_AGENT_ID", "")
@@ -152,12 +148,9 @@ def setup_voice() -> None:
     if agent_id:
         print_info(f"Outbound calls use your Pingram Voice Agent {agent_id}.")
     else:
-        print_info(
-            "No saved agent selected — outbound calls use a bundled spec until you "
-            "create one in the Pingram dashboard."
-        )
+        print_warning("Outbound calls will fail until you create a Voice Agent in Pingram.")
 
-    if welcome_to and prompt_yes_no("Place a short test Voice Agent call now?", False):
+    if agent_id and welcome_to and prompt_yes_no("Place a short test Voice Agent call now?", False):
         print()
         print_info("Calling you...")
         if send_welcome_voice_call(api_key, region, welcome_to, agent_id=agent_id or None):
