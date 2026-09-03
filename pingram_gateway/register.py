@@ -36,12 +36,13 @@ EMAIL_HINT = (
 )
 
 VOICE_HINT = (
-    "Pingram Voice places a real phone call. Use send_message target='pingram-voice' "
-    "ONLY when the user explicitly asked you to call someone. Never call as a default "
-    "reply, status update, cron delivery, or reaction to a [Pingram Voice call ended] "
-    "report — those reports are FYI (outcome + transcript). Reply to them in the current "
+    "Pingram Voice places a real phone call using the Voice Agent configured in "
+    "the Pingram app. Use send_message target='pingram-voice' ONLY when the user "
+    "explicitly asked you to call someone. Never call as a default reply, status "
+    "update, cron delivery, or reaction to a [Pingram Voice call ended] report — "
+    "those reports are FYI (outcome + transcript). Reply to them in the current "
     "chat or via email/SMS, not with another call. "
-    "send_message text is a briefing for Pingram's Voice Agent. "
+    "send_message text is a briefing for that Pingram Voice Agent. "
     "You can use 'pingram-voice:+15551234567' for a specific number. "
     "Do not use the CALL notification channel, Twilio, or other voice providers."
 )

@@ -23,6 +23,22 @@ from pingram_gateway.core.setup_common import (
 )
 
 
+def _pick_voice_agent(agents, existing_agent: str, prompt_choice, print_info) -> str:
+    if len(agents) == 1:
+        agent_id = agents[0]["agent_id"]
+        print_info(f"Using Voice Agent from the Pingram app: {agents[0]['name']} ({agent_id})")
+        return agent_id
+    labels = [f"{a['name']} ({a['agent_id']})" for a in agents]
+    default_idx = 0
+    if existing_agent:
+        for i, agent in enumerate(agents):
+            if agent["agent_id"] == existing_agent:
+                default_idx = i
+                break
+    choice = prompt_choice("Which Pingram app Voice Agent should Hermes call with?", labels, default_idx)
+    return agents[choice]["agent_id"]
+
+
 def setup_voice() -> None:
     from hermes_cli.setup import (
         color,
@@ -45,15 +61,28 @@ def setup_voice() -> None:
     print_header("Pingram Voice")
     print()
     print_info(
-        "Voice starts a live Pingram Voice Agent call. Hermes briefs the agent; "
-        "Pingram hosts the two-way conversation on the phone. This is not a one-way "
-        "text-to-speech notification."
+        "Voice places a call with a Voice Agent you create in the Pingram app. "
+        "Hermes only briefs that agent for this call — voice, model, hang-up, and "
+        "tokens are configured in Pingram."
     )
     mode = prompt_setup_mode()
 
     region, api_key = prompt_region_and_api_key(header="Pingram Voice", skip_header=True)
     if not region or not api_key:
         return
+
+    print()
+    print_info("Looking up Voice Agents in your Pingram account...")
+    agents = fetch_voice_agents(api_key, region)
+    if not agents:
+        print_warning(
+            "No Voice Agent found. Create one in the Pingram app, then run this setup again."
+        )
+        return
+
+    existing_agent = (get_env_value("PINGRAM_VOICE_AGENT_ID") or "").strip()
+    agent_id = _pick_voice_agent(agents, existing_agent, prompt_choice, print_info)
+    save_env_value("PINGRAM_VOICE_AGENT_ID", agent_id)
 
     existing_allowed = parse_csv(get_env_value("PINGRAM_VOICE_ALLOWED_USERS") or "")
     existing_home = (get_env_value("PINGRAM_VOICE_HOME_CHANNEL") or "").strip()
@@ -105,33 +134,6 @@ def setup_voice() -> None:
                 )
         save_home_channel_env("PINGRAM_VOICE_HOME_CHANNEL", home_channel or welcome_to)
 
-    print()
-    print_info("Checking your Pingram Voice Agents...")
-    agents = fetch_voice_agents(api_key, region)
-    existing_agent = (get_env_value("PINGRAM_VOICE_AGENT_ID") or "").strip()
-    agent_id = ""
-    if len(agents) == 1:
-        agent_id = agents[0]["agent_id"]
-        print_info(f"Using your Pingram Voice Agent: {agents[0]['name']} ({agent_id})")
-    elif agents:
-        labels = [f"{a['name']} ({a['agent_id']})" for a in agents]
-        default_idx = 0
-        if existing_agent:
-            for i, agent in enumerate(agents):
-                if agent["agent_id"] == existing_agent:
-                    default_idx = i
-                    break
-        choice = prompt_choice("Voice Agent for outbound calls", labels, default_idx)
-        agent_id = agents[choice]["agent_id"]
-    else:
-        print_warning(
-            "No saved Voice Agents on this account. Create one in the Pingram dashboard "
-            "(model, voice, hang-up, tokens) before Hermes can place calls."
-        )
-        if existing_agent:
-            save_env_value("PINGRAM_VOICE_AGENT_ID", "")
-    save_env_value("PINGRAM_VOICE_AGENT_ID", agent_id)
-
     seed_display_overrides(load_config, save_config, PLATFORM_VOICE)
     enable_gateway_platform(load_config, save_config, PLATFORM_VOICE)
     set_gateway_home_channel(PLATFORM_VOICE, home_channel)
@@ -145,12 +147,9 @@ def setup_voice() -> None:
             "Voice is not a Hermes home channel. Hermes will only call when you explicitly "
             "ask it to (send_message to pingram-voice)."
         )
-    if agent_id:
-        print_info(f"Outbound calls use your Pingram Voice Agent {agent_id}.")
-    else:
-        print_warning("Outbound calls will fail until you create a Voice Agent in Pingram.")
+    print_info(f"Calls use the Pingram app Voice Agent {agent_id}.")
 
-    if agent_id and welcome_to and prompt_yes_no("Place a short test Voice Agent call now?", False):
+    if welcome_to and prompt_yes_no("Place a short test Voice Agent call now?", False):
         print()
         print_info("Calling you...")
         if send_welcome_voice_call(api_key, region, welcome_to, agent_id=agent_id or None):

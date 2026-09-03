@@ -1,13 +1,13 @@
 name: pingram
 label: Pingram
 kind: platform
-version: 1.1.7
+version: 1.1.8
 description: >
   Pingram gateway adapters for Hermes Agent. Registers three platforms —
   pingram-sms, pingram-email, and pingram-voice. SMS and Email receive inbound
-  messages by polling Pingram's logs API. Voice starts outbound Pingram Voice
-  Agent calls (POST /voice/call with an agent spec). Finished calls Hermes placed
-  are polled for outcome and transcript. All three send through the Pingram
+  messages by polling Pingram's logs API. Voice places outbound calls using a
+  Voice Agent created in the Pingram app. Finished calls Hermes placed are
+  polled for outcome and transcript. All three send through the Pingram
   Python SDK.
 author: Pingram
 optional_env:
@@ -48,7 +48,7 @@ optional_env:
     prompt: "Voice home channel"
     password: false
   - name: PINGRAM_VOICE_AGENT_ID
-    description: "Saved Pingram Voice Agent id. Blank uses the first agent on the account."
+    description: "Voice Agent created in the Pingram app. Blank uses the first agent on the account."
     prompt: "Voice Agent id"
     password: false
   - name: PINGRAM_POLL_INTERVAL

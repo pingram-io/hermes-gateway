@@ -170,8 +170,7 @@ async def pingram_place_voice_call(
                 return SendResult(
                     success=False,
                     error=(
-                        "No Pingram Voice Agent found. Create one in the Pingram dashboard, "
-                        "then set PINGRAM_VOICE_AGENT_ID or re-run hermes setup gateway."
+                        "No Voice Agent found. Create one in the Pingram app, then try again."
                     ),
                 )
             spec_dict = overlay_briefing(spec_dict, briefing)
@@ -224,7 +223,7 @@ def _spec_to_dict(spec: Any) -> Optional[Dict[str, Any]]:
 async def _resolve_voice_agent_spec(
     client, preferred_id: Optional[str]
 ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
-    """Load a saved Pingram Voice Agent spec. No bundled fallback."""
+    """Load the Voice Agent created in the Pingram app."""
     wanted = (preferred_id or "").strip() or None
     if wanted:
         try:
@@ -250,7 +249,7 @@ async def _resolve_voice_agent_spec(
     except Exception:
         logger.debug("Pingram Voice: list agents failed", exc_info=True)
 
-    logger.warning("Pingram Voice: no saved Voice Agent on this account")
+    logger.warning("Pingram Voice: no Voice Agent on this Pingram account")
     return None, None
 
 

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hermes-pingram-gateway"
-version = "1.1.7"
+version = "1.1.8"
 description = "Hermes Agent platform plugin: Pingram SMS, Email, and Voice gateways."
 readme = "README.md"
 requires-python = ">=3.9"

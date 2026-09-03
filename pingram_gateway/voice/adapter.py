@@ -28,11 +28,10 @@ logger = logging.getLogger(__name__)
 
 
 class PingramVoiceAdapter(BasePlatformAdapter):
-    """Places outbound Pingram Voice Agent calls (two-way AI on the phone).
+    """Places outbound calls with a Voice Agent created in the Pingram app.
 
     Hermes starts the call with a briefing; Pingram hosts the live conversation.
     Finished calls Hermes placed are polled and injected as a transcript message.
-    This is not the one-way CALL notification channel (`send({ call })`).
     """
 
     def __init__(self, config, **kwargs):

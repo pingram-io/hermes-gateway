@@ -1,8 +1,4 @@
-"""Attach a Hermes briefing to a Pingram Voice Agent spec.
-
-Model, voice, tokens, hang-up, voicemail, and conversation settings come from
-the saved Pingram agent — this module does not define them.
-"""
+"""Attach a Hermes briefing to a Voice Agent from the Pingram app."""
 
 from __future__ import annotations
 
@@ -13,7 +9,7 @@ _MAX_OPENER_CHARS = 1200
 
 
 def overlay_briefing(spec: Dict[str, Any], briefing: str) -> Dict[str, Any]:
-    """Copy a Pingram agent spec and attach this call's spoken task."""
+    """Copy the Pingram app agent spec and attach this call's spoken task."""
     out = copy.deepcopy(spec)
     text = (briefing or "").strip()
     if not text:

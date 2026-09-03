@@ -51,7 +51,7 @@ hermes setup gateway
 
 - **Pingram SMS** — region, API key, your phone number, optional sender override, welcome text
 - **Pingram Email** — region, API key (reused if SMS already configured), your email, optional sender, welcome email
-- **Pingram Voice** — number to call, saved Voice Agent (from the dashboard), optional test call
+- **Pingram Voice** — create a Voice Agent in the Pingram app first, then the number to call
 
 Each wizard enables its platform in `~/.hermes/config.yaml` and writes env vars to `~/.hermes/.env`.
 
@@ -82,7 +82,7 @@ PINGRAM_API_KEY=pingram_sk_...
 PINGRAM_REGION=us
 PINGRAM_VOICE_ALLOWED_USERS=+15559876543
 PINGRAM_VOICE_HOME_CHANNEL=+15559876543
-# Voice Agent from the Pingram dashboard (blank = first saved agent)
+# Voice Agent created in the Pingram app (blank = first agent on the account)
 #PINGRAM_VOICE_AGENT_ID=agt_...
 ```
 
@@ -119,15 +119,15 @@ Explicit recipients also work: `pingram-sms:+15551234567`, `pingram-email:you@ex
 
 ## Voice
 
-`pingram-voice` places an outbound [Voice Agent](https://www.pingram.io) call via
-`POST /voice/call`. It loads the agent saved in the Pingram dashboard — model,
-voice, temperature, tokens, hang-up, voicemail, tools — and only overlays a
-briefing (`send_message` text as instructions + spoken opener). There is no
-bundled Hermes spec. After the call ends, Hermes gets a
-`[Pingram Voice call ended]` message with outcome and transcript so it knows
-whether they picked up and what was said.
+Create a Voice Agent in the Pingram app (model, voice, hang-up, tokens). Hermes
+does not define those settings.
 
-Someone calling a number bound to a Voice Agent in the Pingram dashboard talks to
+`pingram-voice` places an outbound call with that agent via `POST /voice/call`.
+The `send_message` text is a briefing for this call (instructions + spoken
+opener). After the call ends, Hermes gets a `[Pingram Voice call ended]`
+message with outcome and transcript.
+
+Someone calling a number bound to a Voice Agent in the Pingram app talks to
 that agent directly — Hermes does not sit in the live audio path and does not
 see inbound rings.
 
