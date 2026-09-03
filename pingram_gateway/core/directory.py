@@ -7,10 +7,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from pingram_gateway.core.constants import PLATFORM_EMAIL, PLATFORM_SMS
+from pingram_gateway.core.constants import PLATFORM_EMAIL, PLATFORM_SMS, PLATFORM_VOICE
 from pingram_gateway.core.helpers import (
     normalize_email_chat_id,
     normalize_sms_chat_id,
+    normalize_voice_chat_id,
     parse_sender_email,
     redact_user,
 )
@@ -33,6 +34,9 @@ def home_from_env(platform_name: str) -> Optional[Dict[str, str]]:
     if platform_name == PLATFORM_SMS:
         chat_id = os.getenv("PINGRAM_SMS_HOME_CHANNEL", "").strip()
         name = os.getenv("PINGRAM_SMS_HOME_CHANNEL_NAME", "").strip() or "Home"
+    elif platform_name == PLATFORM_VOICE:
+        chat_id = os.getenv("PINGRAM_VOICE_HOME_CHANNEL", "").strip()
+        name = os.getenv("PINGRAM_VOICE_HOME_CHANNEL_NAME", "").strip() or "Home"
     elif platform_name == PLATFORM_EMAIL:
         chat_id = os.getenv("PINGRAM_EMAIL_HOME_CHANNEL", "").strip()
         name = os.getenv("PINGRAM_EMAIL_HOME_CHANNEL_NAME", "").strip() or "Home"
@@ -57,7 +61,7 @@ def home_from_config(config, platform_name: str) -> Optional[Dict[str, str]]:
 
 def ensure_home_channel(config, platform_name: str) -> None:
     """Ensure gateway config has a home channel (env fallback, Weixin-style)."""
-    if platform_name not in {PLATFORM_SMS, PLATFORM_EMAIL}:
+    if platform_name not in {PLATFORM_SMS, PLATFORM_EMAIL, PLATFORM_VOICE}:
         return
     try:
         from gateway.config import HomeChannel, Platform
@@ -107,9 +111,15 @@ def _legacy_session_entries(platform_name: str) -> List[Dict[str, Any]]:
             continue
         raw_chat_id = str(origin.get("chat_id") or "")
         if platform_name == PLATFORM_SMS:
-            if raw_chat_id.lower().startswith("email:"):
+            if raw_chat_id.lower().startswith("email:") or raw_chat_id.lower().startswith("voice:"):
                 continue
             chat_id = normalize_sms_chat_id(raw_chat_id)
+            if not chat_id:
+                continue
+        elif platform_name == PLATFORM_VOICE:
+            if raw_chat_id.lower().startswith("email:") or raw_chat_id.lower().startswith("sms:"):
+                continue
+            chat_id = normalize_voice_chat_id(raw_chat_id)
             if not chat_id:
                 continue
         else:
@@ -165,7 +175,7 @@ def looks_like_junk_label(label: str) -> bool:
         return True
     if "*" in s:
         return True
-    if s.lower().startswith("email:") or s.lower().startswith("sms:"):
+    if s.lower().startswith("email:") or s.lower().startswith("sms:") or s.lower().startswith("voice:"):
         return True
     if "<" in s and "@" in s:
         return True
@@ -225,8 +235,12 @@ def collect_directory_entries(platform_name: str, config=None) -> List[Dict[str,
 def format_platform_targets(platform_name: str, entries: List[Dict[str, Any]]) -> List[str]:
     if not entries:
         return []
-    label = "Pingram SMS" if platform_name == PLATFORM_SMS else "Pingram Email"
-    home_hint = "SMS" if platform_name == PLATFORM_SMS else "email"
+    if platform_name == PLATFORM_VOICE:
+        label, home_hint = "Pingram Voice", "calls"
+    elif platform_name == PLATFORM_SMS:
+        label, home_hint = "Pingram SMS", "SMS"
+    else:
+        label, home_hint = "Pingram Email", "email"
     lines = [f"{label}:"]
     for entry in entries:
         name = entry.get("name") or entry.get("id")
@@ -241,7 +255,7 @@ def format_platform_targets(platform_name: str, entries: List[Dict[str, Any]]) -
 
 def format_list_supplement(config=None) -> str:
     blocks: List[str] = []
-    for platform_name in (PLATFORM_SMS, PLATFORM_EMAIL):
+    for platform_name in (PLATFORM_SMS, PLATFORM_EMAIL, PLATFORM_VOICE):
         entries = collect_directory_entries(platform_name, config=config)
         if entries:
             blocks.extend(format_platform_targets(platform_name, entries))

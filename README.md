@@ -1,17 +1,18 @@
 # Pingram Gateway for Hermes
 
-Chat with your [Hermes](https://github.com/NousResearch/hermes) agent over **SMS**
-and **Email**, routed through [Pingram](https://pingram.io). This plugin registers
-three Hermes platforms:
+Chat with your [Hermes](https://github.com/NousResearch/hermes) agent over **SMS**,
+**Email**, and **Voice**, routed through [Pingram](https://pingram.io). This plugin
+registers three Hermes platforms:
 
 | Platform | Purpose |
 | --- | --- |
 | `pingram-sms` | Text messaging (MMS images supported inbound) |
 | `pingram-email` | Email threads with HTML replies |
-| `pingram-voice` | Alpha stub — not available yet |
+| `pingram-voice` | Outbound Pingram Voice Agent calls (live two-way AI) |
 
-Inbound messages are received by **polling** Pingram's logs API — no public
-endpoint or webhook is required.
+SMS and email inbound messages are received by **polling** Pingram's logs API — no
+public endpoint or webhook is required. Voice is outbound: Hermes starts a Voice
+Agent call with a briefing; Pingram hosts the live conversation on the phone.
 
 ```mermaid
 flowchart LR
@@ -22,6 +23,9 @@ flowchart LR
   email --> agent
   agent -->|"send_message"| sms
   agent -->|"send_message"| email
+  agent -->|"send_message briefing"| voice["pingram-voice"]
+  voice -->|"POST /voice/call"| pingram
+  pingram -->|"live Voice Agent"| human
 ```
 
 ## Install
@@ -43,7 +47,7 @@ hermes setup gateway
 
 - **Pingram SMS** — region, API key, your phone number, optional sender override, welcome text
 - **Pingram Email** — region, API key (reused if SMS already configured), your email, optional sender, welcome email
-- **Pingram Voice (Alpha)** — info only: voice is coming soon; email hello@pingram.io for beta access
+- **Pingram Voice** — number to call, optional saved Voice Agent, optional test call
 
 Each wizard enables its platform in `~/.hermes/config.yaml` and writes env vars to `~/.hermes/.env`.
 
@@ -67,6 +71,17 @@ PINGRAM_EMAIL_ALLOWED_USERS=you@example.com
 PINGRAM_EMAIL_HOME_CHANNEL=you@example.com
 ```
 
+Minimum for Voice:
+
+```bash
+PINGRAM_API_KEY=pingram_sk_...
+PINGRAM_REGION=us
+PINGRAM_VOICE_ALLOWED_USERS=+15559876543
+PINGRAM_VOICE_HOME_CHANNEL=+15559876543
+# Optional: use a Voice Agent created in the Pingram dashboard
+#PINGRAM_VOICE_AGENT_ID=agt_...
+```
+
 Enable platforms in `~/.hermes/config.yaml`:
 
 ```yaml
@@ -75,6 +90,8 @@ gateway:
     pingram-sms:
       enabled: true
     pingram-email:
+      enabled: true
+    pingram-voice:
       enabled: true
 ```
 
@@ -86,23 +103,28 @@ Each platform has its own home channel — no more choosing SMS vs email upfront
 
 - Text the user: `send_message` with `target="pingram-sms"`
 - Email the user: `send_message` with `target="pingram-email"`
+- Call the user: `send_message` with `target="pingram-voice"` (message is a briefing for the Voice Agent)
 
-Explicit recipients also work: `pingram-sms:+15551234567`, `pingram-email:you@example.com`
+Explicit recipients also work: `pingram-sms:+15551234567`, `pingram-email:you@example.com`, `pingram-voice:+15551234567`
 
 ## Chat ID formats
 
 - **SMS**: bare E.164 — `+14167718196`
 - **Email**: `user@example.com` or `user@example.com#thread-token` for threading
+- **Voice**: bare E.164 — `+14167718196`
 
-## Voice (alpha)
+## Voice
 
-`pingram-voice` appears in setup but does not connect. Selecting it shows:
+`pingram-voice` places an outbound [Voice Agent](https://www.pingram.io) call via
+`POST /voice/call`. The `send_message` text is a briefing for the live agent
+(instructions + optional spoken opener), not a one-way TTS notification.
 
-> Pingram Voice is in alpha and will be available ASAP. Email hello@pingram.io to reserve your spot for beta.
+Someone calling a number bound to a Voice Agent in the Pingram dashboard talks to
+that agent directly — Hermes does not sit in the live audio path.
 
 ## Security
 
-- Per-channel allowlists: `PINGRAM_SMS_ALLOWED_USERS`, `PINGRAM_EMAIL_ALLOWED_USERS`
+- Per-channel allowlists: `PINGRAM_SMS_ALLOWED_USERS`, `PINGRAM_EMAIL_ALLOWED_USERS`, `PINGRAM_VOICE_ALLOWED_USERS`
 - Optional dev override: `PINGRAM_ALLOW_ALL_USERS=true`
 - Tracking-id deduplication prevents reprocessing across poll cycles
 - PII redacted in logs
@@ -112,6 +134,7 @@ Explicit recipients also work: `pingram-sms:+15551234567`, `pingram-email:you@ex
 - Inbound email attachments are not downloaded (polling mode)
 - Outbound SMS cannot attach local files (link-only fallback)
 - Inbound delivery delayed by up to `PINGRAM_POLL_INTERVAL` seconds (default 15)
+- Voice is outbound Voice Agent calls — Hermes is not in the live media path
 
 ## License
 

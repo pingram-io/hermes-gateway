@@ -2,7 +2,7 @@
 
 import os
 
-from pingram_gateway.core.constants import PLATFORM_EMAIL, PLATFORM_SMS
+from pingram_gateway.core.constants import PLATFORM_EMAIL, PLATFORM_SMS, PLATFORM_VOICE
 from pingram_gateway.core.discovery import ensure_plugins_discovered
 
 
@@ -11,11 +11,13 @@ def _has_home_channel(platform_name: str) -> bool:
         return bool(os.getenv("PINGRAM_SMS_HOME_CHANNEL", "").strip())
     if platform_name == PLATFORM_EMAIL:
         return bool(os.getenv("PINGRAM_EMAIL_HOME_CHANNEL", "").strip())
+    if platform_name == PLATFORM_VOICE:
+        return bool(os.getenv("PINGRAM_VOICE_HOME_CHANNEL", "").strip())
     return False
 
 
 def build_cli_delivery_note(context) -> str:
-    """Return agent-only notes for proactive SMS/email from the local CLI."""
+    """Return agent-only notes for proactive SMS/email/voice from the local CLI."""
     try:
         from gateway.config import Platform, PlatformConfig, load_gateway_config
     except ImportError:
@@ -27,10 +29,11 @@ def build_cli_delivery_note(context) -> str:
     connected = {p.value for p in (context.connected_platforms or [])}
     has_sms = PLATFORM_SMS in connected
     has_email = PLATFORM_EMAIL in connected
+    has_voice = PLATFORM_VOICE in connected
 
-    if not has_sms or not has_email:
+    if not has_sms or not has_email or not has_voice:
         try:
-            from pingram_gateway.core.config import email_configured, sms_configured
+            from pingram_gateway.core.config import email_configured, sms_configured, voice_configured
 
             config = load_gateway_config()
             empty = PlatformConfig()
@@ -40,16 +43,19 @@ def build_cli_delivery_note(context) -> str:
             if not has_email:
                 email_cfg = config.platforms.get(Platform(PLATFORM_EMAIL)) or empty
                 has_email = email_configured(email_cfg)
+            if not has_voice:
+                voice_cfg = config.platforms.get(Platform(PLATFORM_VOICE)) or empty
+                has_voice = voice_configured(voice_cfg)
         except Exception:
             pass
 
-    if not has_sms and not has_email:
+    if not has_sms and not has_email and not has_voice:
         return ""
 
     lines = [
         "",
         "**Platform notes:** You are in the local Hermes CLI. When the user asks "
-        "you to text or email them proactively, use send_message — not the himalaya "
+        "you to text, email, or call them proactively, use send_message — not the himalaya "
         "skill, IMAP/SMTP tools, or other mailbox CLIs.",
     ]
     if has_sms:
@@ -75,6 +81,18 @@ def build_cli_delivery_note(context) -> str:
                 '- Email: send_message(target="pingram-email:user@example.com", '
                 'subject="Short descriptive subject", message="<p>...</p>") — email is not a home '
                 "channel, so include the recipient address; use HTML, not markdown."
+            )
+    if has_voice:
+        if _has_home_channel(PLATFORM_VOICE):
+            lines.append(
+                '- Voice: send_message(target="pingram-voice", message="...") '
+                "(starts a Pingram Voice Agent call to the home number; message is a briefing, "
+                "not a TTS script)."
+            )
+        else:
+            lines.append(
+                '- Voice: send_message(target="pingram-voice:+15551234567", message="...") '
+                "(Voice is not a home channel — include the recipient number; message is a briefing)."
             )
     lines.append(
         "- Do not load or use the himalaya skill for outbound delivery when Pingram is configured."

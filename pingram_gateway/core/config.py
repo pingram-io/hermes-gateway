@@ -98,6 +98,19 @@ def email_configured(config) -> bool:
     return bool(parse_csv(allowed) or str(home).strip() or shared.allow_all)
 
 
+def voice_configured(config) -> bool:
+    shared = load_shared_config(config)
+    if not shared.api_key:
+        return False
+    allowed = os.getenv("PINGRAM_VOICE_ALLOWED_USERS") or cfg_value(
+        config, "PINGRAM_VOICE_ALLOWED_USERS", "allowed_users", ""
+    )
+    home = os.getenv("PINGRAM_VOICE_HOME_CHANNEL") or cfg_value(
+        config, "PINGRAM_VOICE_HOME_CHANNEL", "home_channel_chat_id", ""
+    )
+    return bool(parse_csv(allowed) or str(home).strip() or shared.allow_all)
+
+
 def load_sms_allowlist(config) -> set:
     allowed = parse_csv(os.getenv("PINGRAM_SMS_ALLOWED_USERS") or cfg_value(config, "PINGRAM_SMS_ALLOWED_USERS", "allowed_users", ""))
     return {norm_phone(normalize_phone_e164(a)) for a in allowed}
@@ -110,6 +123,13 @@ def load_email_allowlist(config) -> set:
     return {norm_email(a) for a in allowed if "@" in a}
 
 
+def load_voice_allowlist(config) -> set:
+    allowed = parse_csv(
+        os.getenv("PINGRAM_VOICE_ALLOWED_USERS") or cfg_value(config, "PINGRAM_VOICE_ALLOWED_USERS", "allowed_users", "")
+    )
+    return {norm_phone(normalize_phone_e164(a)) for a in allowed}
+
+
 def sms_home_channel(config) -> str:
     return str(
         os.getenv("PINGRAM_SMS_HOME_CHANNEL") or cfg_value(config, "PINGRAM_SMS_HOME_CHANNEL", "home_channel_chat_id", "")
@@ -119,6 +139,19 @@ def sms_home_channel(config) -> str:
 def email_home_channel(config) -> str:
     return str(
         os.getenv("PINGRAM_EMAIL_HOME_CHANNEL") or cfg_value(config, "PINGRAM_EMAIL_HOME_CHANNEL", "home_channel_chat_id", "")
+    ).strip()
+
+
+def voice_home_channel(config) -> str:
+    return str(
+        os.getenv("PINGRAM_VOICE_HOME_CHANNEL")
+        or cfg_value(config, "PINGRAM_VOICE_HOME_CHANNEL", "home_channel_chat_id", "")
+    ).strip()
+
+
+def voice_agent_id(config) -> str:
+    return str(
+        os.getenv("PINGRAM_VOICE_AGENT_ID") or cfg_value(config, "PINGRAM_VOICE_AGENT_ID", "voice_agent_id", "")
     ).strip()
 
 
