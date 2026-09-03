@@ -155,7 +155,7 @@ async def pingram_place_voice_call(
 ):
     """Place an outbound Voice Agent call (POST /voice/call), never send() CALL."""
     from gateway.platforms.base import SendResult
-    from pingram_gateway.voice.spec import default_spec_dict, overlay_briefing
+    from pingram_gateway.voice.spec import overlay_briefing
 
     try:
         from pingram import Pingram
@@ -165,16 +165,7 @@ async def pingram_place_voice_call(
 
     try:
         async with Pingram(api_key=api_key, region=region) as client:
-            spec_dict = default_spec_dict()
-            saved_id = (agent_id or "").strip() or None
-            if saved_id:
-                try:
-                    got = await client.voice.voice_get_agent(saved_id)
-                    if got and got.agent and got.agent.spec:
-                        spec_dict = got.agent.spec.to_dict()
-                except Exception as e:
-                    logger.warning("Pingram Voice: failed to load agent %s, using default spec: %s", saved_id, e)
-                    saved_id = None
+            spec_dict, saved_id = await _resolve_voice_agent_spec(client, agent_id)
             spec_dict = overlay_briefing(spec_dict, briefing)
             body: Dict[str, Any] = {"phoneNumber": phone_number, "spec": spec_dict}
             if saved_id:
@@ -203,6 +194,54 @@ async def pingram_get_voice_call(api_key: str, region: str, tracking_id: str):
     except Exception:
         logger.debug("Pingram Voice: get call %s failed", tid, exc_info=True)
         return None
+
+
+def _spec_to_dict(spec: Any) -> Optional[Dict[str, Any]]:
+    if spec is None:
+        return None
+    if isinstance(spec, dict):
+        return spec
+    to_dict = getattr(spec, "to_dict", None)
+    if callable(to_dict):
+        try:
+            data = to_dict()
+        except Exception:
+            return None
+        return data if isinstance(data, dict) else None
+    return None
+
+
+async def _resolve_voice_agent_spec(client, preferred_id: Optional[str]) -> Tuple[Dict[str, Any], Optional[str]]:
+    """Load a saved Pingram Voice Agent spec; bundled Hermes spec is fallback only."""
+    from pingram_gateway.voice.spec import default_spec_dict
+
+    wanted = (preferred_id or "").strip() or None
+    if wanted:
+        try:
+            got = await client.voice.voice_get_agent(wanted)
+            agent = getattr(got, "agent", None)
+            spec_dict = _spec_to_dict(getattr(agent, "spec", None))
+            if spec_dict:
+                return spec_dict, wanted
+        except Exception as e:
+            logger.warning("Pingram Voice: failed to load agent %s: %s", wanted, e)
+
+    try:
+        resp = await client.voice.voice_list_agents()
+        for agent in getattr(resp, "agents", None) or []:
+            agent_id = str(getattr(agent, "agent_id", "") or "").strip()
+            spec_dict = _spec_to_dict(getattr(agent, "spec", None))
+            if agent_id and spec_dict:
+                if wanted and agent_id != wanted:
+                    logger.warning("Pingram Voice: falling back to saved agent %s", agent_id)
+                else:
+                    logger.info("Pingram Voice: using saved agent %s", agent_id)
+                return spec_dict, agent_id
+    except Exception:
+        logger.debug("Pingram Voice: list agents failed", exc_info=True)
+
+    logger.info("Pingram Voice: no saved agent, using bundled Hermes spec")
+    return default_spec_dict(), None
 
 
 def fetch_voice_agents(api_key: str, region: str) -> List[Dict[str, str]]:

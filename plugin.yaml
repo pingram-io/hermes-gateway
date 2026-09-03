@@ -1,7 +1,7 @@
 name: pingram
 label: Pingram
 kind: platform
-version: 1.1.4
+version: 1.1.5
 description: >
   Pingram gateway adapters for Hermes Agent. Registers three platforms —
   pingram-sms, pingram-email, and pingram-voice. SMS and Email receive inbound
@@ -48,8 +48,8 @@ optional_env:
     prompt: "Voice home channel"
     password: false
   - name: PINGRAM_VOICE_AGENT_ID
-    description: "Optional saved Voice Agent id. Blank uses the default Hermes spec."
-    prompt: "Voice Agent id (optional)"
+    description: "Saved Pingram Voice Agent id. Blank uses the first agent on the account."
+    prompt: "Voice Agent id"
     password: false
   - name: PINGRAM_POLL_INTERVAL
     description: "Seconds between inbound poll cycles (default 15)."

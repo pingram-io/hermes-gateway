@@ -110,23 +110,27 @@ def setup_voice() -> None:
     agents = fetch_voice_agents(api_key, region)
     existing_agent = (get_env_value("PINGRAM_VOICE_AGENT_ID") or "").strip()
     agent_id = ""
-    if agents:
-        labels = ["Default Hermes spec (no saved agent)"] + [
-            f"{a['name']} ({a['agent_id']})" for a in agents
+    if len(agents) == 1:
+        agent_id = agents[0]["agent_id"]
+        print_info(f"Using your Pingram Voice Agent: {agents[0]['name']} ({agent_id})")
+    elif agents:
+        labels = [f"{a['name']} ({a['agent_id']})" for a in agents] + [
+            "Bundled Hermes spec (ignore saved Pingram agents)"
         ]
         default_idx = 0
         if existing_agent:
             for i, agent in enumerate(agents):
                 if agent["agent_id"] == existing_agent:
-                    default_idx = i + 1
+                    default_idx = i
                     break
         choice = prompt_choice("Voice Agent for outbound calls", labels, default_idx)
-        if choice > 0:
-            agent_id = agents[choice - 1]["agent_id"]
+        if choice < len(agents):
+            agent_id = agents[choice]["agent_id"]
     else:
         print_info(
-            "No saved Voice Agents on this account — outbound calls will use a default "
-            "Hermes conversational spec. You can create agents in the Pingram dashboard."
+            "No saved Voice Agents on this account — outbound calls will use a bundled "
+            "Hermes spec. Create an agent in the Pingram dashboard to control voice, "
+            "model, and temperature from the app."
         )
         if existing_agent:
             save_env_value("PINGRAM_VOICE_AGENT_ID", "")
@@ -146,9 +150,12 @@ def setup_voice() -> None:
             "ask it to (send_message to pingram-voice)."
         )
     if agent_id:
-        print_info(f"Outbound calls use saved Voice Agent {agent_id}.")
+        print_info(f"Outbound calls use your Pingram Voice Agent {agent_id}.")
     else:
-        print_info("Outbound calls use the default Hermes Voice Agent spec.")
+        print_info(
+            "No saved agent selected — outbound calls use a bundled spec until you "
+            "create one in the Pingram dashboard."
+        )
 
     if welcome_to and prompt_yes_no("Place a short test Voice Agent call now?", False):
         print()

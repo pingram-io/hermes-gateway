@@ -51,7 +51,7 @@ hermes setup gateway
 
 - **Pingram SMS** — region, API key, your phone number, optional sender override, welcome text
 - **Pingram Email** — region, API key (reused if SMS already configured), your email, optional sender, welcome email
-- **Pingram Voice** — number to call, optional saved Voice Agent, optional test call
+- **Pingram Voice** — number to call, saved Voice Agent (from the dashboard), optional test call
 
 Each wizard enables its platform in `~/.hermes/config.yaml` and writes env vars to `~/.hermes/.env`.
 
@@ -82,7 +82,7 @@ PINGRAM_API_KEY=pingram_sk_...
 PINGRAM_REGION=us
 PINGRAM_VOICE_ALLOWED_USERS=+15559876543
 PINGRAM_VOICE_HOME_CHANNEL=+15559876543
-# Optional: use a Voice Agent created in the Pingram dashboard
+# Voice Agent from the Pingram dashboard (blank = first saved agent)
 #PINGRAM_VOICE_AGENT_ID=agt_...
 ```
 
@@ -120,7 +120,8 @@ Explicit recipients also work: `pingram-sms:+15551234567`, `pingram-email:you@ex
 ## Voice
 
 `pingram-voice` places an outbound [Voice Agent](https://www.pingram.io) call via
-`POST /voice/call`. The `send_message` text is a briefing for the live agent
+`POST /voice/call`, using the agent saved in the Pingram dashboard (model, voice,
+temperature, tools). The `send_message` text is a briefing for that agent
 (instructions + spoken opener), not a one-way TTS notification. After the call
 ends, Hermes gets a `[Pingram Voice call ended]` message with outcome and
 transcript so it knows whether they picked up and what was said.
