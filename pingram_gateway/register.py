@@ -1,8 +1,6 @@
 """Register Pingram SMS, Email, and Voice Hermes platforms."""
 
-from pingram_gateway.core.config import channel_env_seed, email_configured, sms_configured
-from typing import Optional, Tuple
-
+from pingram_gateway.core.config import channel_env_seed, email_configured, sms_configured, voice_configured
 from pingram_gateway.core.constants import PLATFORM_EMAIL, PLATFORM_SMS, PLATFORM_VOICE
 from pingram_gateway.core.helpers import check_shared_requirements
 from pingram_gateway.core.send_message import install_send_message_parsers
@@ -11,7 +9,7 @@ from pingram_gateway.email.adapter import PingramEmailAdapter, standalone_send_e
 from pingram_gateway.email.setup import setup_email
 from pingram_gateway.sms.adapter import PingramSmsAdapter, standalone_send_sms
 from pingram_gateway.sms.setup import setup_sms
-from pingram_gateway.voice.adapter import PingramVoiceStubAdapter, standalone_send_voice
+from pingram_gateway.voice.adapter import PingramVoiceAdapter, standalone_send_voice
 from pingram_gateway.voice.setup import setup_voice
 
 INSTALL_HINT = "hermes plugins install pingram-io/hermes-gateway  (SDK auto-installs on first run)"
@@ -38,9 +36,15 @@ EMAIL_HINT = (
 )
 
 VOICE_HINT = (
-    "Pingram Voice is in beta and not enabled on this account yet. Do not attempt "
-    "send_message to pingram-voice. Run `hermes setup gateway` → Pingram Voice to "
-    "join the beta waitlist."
+    "Pingram Voice places a real phone call using the Voice Agent configured in "
+    "the Pingram app. Use send_message target='pingram-voice' ONLY when the user "
+    "explicitly asked you to call someone. Never call as a default reply, status "
+    "update, cron delivery, or reaction to a [Pingram Voice call ended] report — "
+    "those reports are FYI (outcome + transcript). Reply to them in the current "
+    "chat or via email/SMS, not with another call. "
+    "send_message text is a briefing for that Pingram Voice Agent. "
+    "You can use 'pingram-voice:+15551234567' for a specific number. "
+    "Do not use the CALL notification channel, Twilio, or other voice providers."
 )
 
 
@@ -56,6 +60,25 @@ def _sms_env_enablement():
     from_sms = os.getenv("PINGRAM_FROM_SMS", "").strip()
     if from_sms:
         seed["from_sms"] = from_sms
+    return seed
+
+
+def _voice_env_enablement():
+    import os
+
+    seed = channel_env_seed("PINGRAM_VOICE_HOME_CHANNEL", "PINGRAM_VOICE_HOME_CHANNEL_NAME")
+    if seed is None:
+        return None
+    # Do not seed home_channel — that makes Voice a Hermes home/cron target and
+    # the agent will place calls for every proactive reply. Keep the env var for
+    # resolving an explicit pingram-voice send.
+    seed.pop("home_channel", None)
+    allowed = os.getenv("PINGRAM_VOICE_ALLOWED_USERS", "").strip()
+    if allowed:
+        seed["allowed_users"] = allowed
+    agent_id = os.getenv("PINGRAM_VOICE_AGENT_ID", "").strip()
+    if agent_id:
+        seed["voice_agent_id"] = agent_id
     return seed
 
 
@@ -125,17 +148,20 @@ def register(ctx):
     ctx.register_platform(
         name=PLATFORM_VOICE,
         label="Pingram Voice",
-        adapter_factory=lambda cfg: PingramVoiceStubAdapter(cfg),
-        check_fn=lambda: True,
-        validate_config=lambda _cfg: False,
-        is_connected=lambda _cfg: False,
-        required_env=[],
+        adapter_factory=lambda cfg: PingramVoiceAdapter(cfg),
+        check_fn=check_shared_requirements,
+        validate_config=voice_configured,
+        is_connected=voice_configured,
+        required_env=["PINGRAM_API_KEY", "PINGRAM_REGION"],
         install_hint=INSTALL_HINT,
+        env_enablement_fn=_voice_env_enablement,
         setup_fn=setup_voice,
+        allowed_users_env="PINGRAM_VOICE_ALLOWED_USERS",
+        allow_all_env="PINGRAM_ALLOW_ALL_USERS",
         standalone_sender_fn=standalone_send_voice,
         emoji="📞",
         pii_safe=True,
-        allow_update_command=False,
+        allow_update_command=True,
         platform_hint=VOICE_HINT,
     )
 
