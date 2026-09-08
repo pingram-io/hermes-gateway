@@ -3,19 +3,21 @@
 import json
 from typing import Optional, Tuple
 
-from pingram_gateway.core.constants import PLATFORM_EMAIL, PLATFORM_SMS
+from pingram_gateway.core.constants import PLATFORM_EMAIL, PLATFORM_SMS, PLATFORM_VOICE
 from pingram_gateway.core.directory import ensure_home_channel, format_list_supplement
 from pingram_gateway.core.discovery import ensure_plugins_discovered
 from pingram_gateway.core.helpers import (
     looks_like_directory_label,
     normalize_email_chat_id,
     normalize_sms_chat_id,
+    normalize_voice_chat_id,
 )
 
 _PLATFORM_ALIASES = {
     "sms": PLATFORM_SMS,
     "pingram": PLATFORM_SMS,
     "email": PLATFORM_EMAIL,
+    "voice": PLATFORM_VOICE,
 }
 
 
@@ -39,8 +41,18 @@ def parse_email_target_ref(target_ref: str) -> Optional[Tuple[str, None, bool]]:
     return None
 
 
+def parse_voice_target_ref(target_ref: str) -> Optional[Tuple[str, None, bool]]:
+    ref = (target_ref or "").strip()
+    if looks_like_directory_label(ref):
+        return None
+    chat_id = normalize_voice_chat_id(ref)
+    if chat_id:
+        return chat_id, None, True
+    return None
+
+
 def normalize_platform_target(target: str) -> str:
-    """Map legacy/short platform names to pingram-sms / pingram-email."""
+    """Map legacy/short platform names to pingram-sms / pingram-email / pingram-voice."""
     raw = (target or "").strip()
     if not raw:
         return raw
@@ -61,12 +73,14 @@ def coerce_send_target(target: str) -> str:
         return target
     platform = parts[0].strip().lower()
     ref = parts[1].strip()
-    if platform not in {PLATFORM_SMS, PLATFORM_EMAIL}:
+    if platform not in {PLATFORM_SMS, PLATFORM_EMAIL, PLATFORM_VOICE}:
         return target
     if looks_like_directory_label(ref):
         return platform
     if platform == PLATFORM_SMS:
         chat_id = normalize_sms_chat_id(ref)
+    elif platform == PLATFORM_VOICE:
+        chat_id = normalize_voice_chat_id(ref)
     else:
         chat_id = normalize_email_chat_id(ref)
     if not chat_id:
@@ -99,6 +113,10 @@ def install_send_message_parsers() -> None:
                 return parsed
         elif platform_name == PLATFORM_EMAIL:
             parsed = parse_email_target_ref(target_ref)
+            if parsed is not None:
+                return parsed
+        elif platform_name == PLATFORM_VOICE:
+            parsed = parse_voice_target_ref(target_ref)
             if parsed is not None:
                 return parsed
         return original_parse(platform_name, target_ref)

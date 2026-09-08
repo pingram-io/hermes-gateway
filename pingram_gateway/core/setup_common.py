@@ -27,6 +27,12 @@ def email_platform_configured() -> bool:
     return email_configured(_empty_platform_config())
 
 
+def voice_platform_configured() -> bool:
+    from pingram_gateway.core.config import voice_configured
+
+    return voice_configured(_empty_platform_config())
+
+
 def shared_credentials_configured() -> bool:
     from hermes_cli.setup import get_env_value
 

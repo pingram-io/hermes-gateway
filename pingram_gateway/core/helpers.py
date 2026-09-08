@@ -197,6 +197,23 @@ def normalize_sms_chat_id(raw: str) -> str:
     return number if is_plausible_sms_number(number) else ""
 
 
+def normalize_voice_chat_id(raw: str) -> str:
+    s = (raw or "").strip()
+    if not s or looks_like_directory_label(s):
+        return ""
+    lower = s.lower()
+    if lower.startswith("voice:"):
+        s = s[len("voice:") :]
+    elif lower.startswith("sms:"):
+        s = s[len("sms:") :]
+    if s.lower().startswith("email:"):
+        return ""
+    if "*" in s:
+        return ""
+    number = normalize_phone_e164(s)
+    return number if is_plausible_sms_number(number) else ""
+
+
 def normalize_email_chat_id(raw: str) -> str:
     s = (raw or "").strip()
     if not s or looks_like_directory_label(s):

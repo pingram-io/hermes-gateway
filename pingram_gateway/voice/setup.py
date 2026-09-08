@@ -1,9 +1,39 @@
-"""Pingram Voice beta signup wizard."""
+"""Pingram Voice setup wizard — outbound Voice Agent calls."""
 
-from pingram_gateway.core.constants import DEFAULT_FROM_NAME, VOICE_BETA_MESSAGE
-from pingram_gateway.core.helpers import norm_email
-from pingram_gateway.core.send import fetch_account_identities, send_voice_beta_signup
-from pingram_gateway.core.setup_common import prompt_region_and_api_key, shared_credentials_configured
+from typing import Optional
+
+from pingram_gateway.core.constants import PLATFORM_VOICE
+from pingram_gateway.core.helpers import parse_csv
+from pingram_gateway.core.send import fetch_voice_agents, send_welcome_voice_call
+from pingram_gateway.core.setup_common import (
+    enable_gateway_platform,
+    existing_allow_all_default,
+    prompt_allow_all_senders,
+    prompt_region_and_api_key,
+    prompt_setup_mode,
+    prompt_sms_allowlist,
+    prompt_sms_phone,
+    save_allowlist_env,
+    seed_display_overrides,
+    set_gateway_home_channel,
+    voice_platform_configured,
+)
+
+
+def _pick_voice_agent(agents, existing_agent: str, prompt_choice, print_info) -> str:
+    if len(agents) == 1:
+        agent_id = agents[0]["agent_id"]
+        print_info(f"Using Voice Agent from the Pingram app: {agents[0]['name']} ({agent_id})")
+        return agent_id
+    labels = [f"{a['name']} ({a['agent_id']})" for a in agents]
+    default_idx = 0
+    if existing_agent:
+        for i, agent in enumerate(agents):
+            if agent["agent_id"] == existing_agent:
+                default_idx = i
+                break
+    choice = prompt_choice("Which Pingram app Voice Agent should Hermes call with?", labels, default_idx)
+    return agents[choice]["agent_id"]
 
 
 def setup_voice() -> None:
@@ -11,59 +41,103 @@ def setup_voice() -> None:
         color,
         Colors,
         get_env_value,
+        load_config,
         print_header,
         print_info,
         print_success,
         print_warning,
-        prompt,
+        prompt_choice,
         prompt_yes_no,
+        save_config,
+        save_env_value,
     )
+
+    if voice_platform_configured() and not prompt_yes_no("Pingram Voice is already configured. Reconfigure?", False):
+        return
 
     print_header("Pingram Voice")
     print()
-    print_info(VOICE_BETA_MESSAGE)
-    print()
-    if not prompt_yes_no("Would you like to enter the Voice beta?", False):
-        print_info("No problem — run this setup again anytime you're ready.")
+    print_info(
+        "Voice places a call with a Voice Agent you create in the Pingram app. "
+        "Hermes only briefs that agent for this call — voice, model, hang-up, and "
+        "tokens are configured in Pingram."
+    )
+    mode = prompt_setup_mode()
+
+    region, api_key = prompt_region_and_api_key(header="Pingram Voice", skip_header=True)
+    if not region or not api_key:
         return
 
     print()
-    print_info("Please enter your email. We'll let you know when we enable voice on your account.")
-    while True:
-        email_raw = prompt("Your email address")
-        email = norm_email(email_raw)
-        if email and "@" in email:
-            break
-        print_warning("Please enter a valid email address.")
+    print_info("Looking up Voice Agents in your Pingram account...")
+    agents = fetch_voice_agents(api_key, region)
+    if not agents:
+        print_warning(
+            "No Voice Agent found. Create one in the Pingram app, then run this setup again."
+        )
+        return
 
-    if shared_credentials_configured():
-        region = (get_env_value("PINGRAM_REGION") or "us").strip().lower()
-        api_key = (get_env_value("PINGRAM_API_KEY") or "").strip()
-    else:
-        print()
-        region, api_key = prompt_region_and_api_key(header="Pingram Voice beta")
-        if not region or not api_key:
-            return
+    existing_agent = (get_env_value("PINGRAM_VOICE_AGENT_ID") or "").strip()
+    agent_id = _pick_voice_agent(agents, existing_agent, prompt_choice, print_info)
+    save_env_value("PINGRAM_VOICE_AGENT_ID", agent_id)
 
-    from_email = (get_env_value("PINGRAM_FROM_EMAIL") or "").strip()
-    if not from_email:
-        account_emails, _, _ = fetch_account_identities(api_key, region)
-        if account_emails:
-            from_email = account_emails[0]
+    existing_allowed = parse_csv(get_env_value("PINGRAM_VOICE_ALLOWED_USERS") or "")
+    existing_home = (get_env_value("PINGRAM_VOICE_HOME_CHANNEL") or "").strip()
+    sms_home = (get_env_value("PINGRAM_SMS_HOME_CHANNEL") or "").strip()
+    default_contact = existing_home or (existing_allowed[0] if existing_allowed else "") or sms_home
+    default_allowed = ",".join(existing_allowed)
+    advanced = mode == "advanced"
 
     print()
-    print_info("Submitting your beta signup...")
-    if send_voice_beta_signup(
-        api_key,
-        region,
-        email,
-        from_email=from_email,
-        from_name=(get_env_value("PINGRAM_FROM_NAME") or DEFAULT_FROM_NAME).strip(),
-    ):
-        print()
-        print_success("You're on the Voice beta waitlist!")
-        print_info(f"We'll reach out at {email} when voice is enabled on your account.")
-    else:
-        print_warning(
-            "Couldn't submit your signup just now. Try again later or email hello@pingram.io directly."
+    welcome_to: Optional[str] = None
+
+    if not advanced:
+        contact = prompt_sms_phone(
+            label="Phone number to call (E.164, e.g. +15005005000)",
+            default=default_contact,
         )
+        save_allowlist_env("PINGRAM_VOICE_ALLOWED_USERS", [contact])
+        save_env_value("PINGRAM_ALLOW_ALL_USERS", "false")
+        welcome_to = contact
+    else:
+        allow_all = prompt_allow_all_senders(default=existing_allow_all_default())
+        if allow_all:
+            save_allowlist_env("PINGRAM_VOICE_ALLOWED_USERS", [])
+            save_env_value("PINGRAM_ALLOW_ALL_USERS", "true")
+            contact = prompt_sms_phone(
+                label="Phone number to call (E.164, e.g. +15005005000)",
+                default=default_contact,
+            )
+            welcome_to = contact
+        else:
+            save_env_value("PINGRAM_ALLOW_ALL_USERS", "false")
+            print_info("Only these numbers may be called (comma-separated, E.164).")
+            delivery_choices = prompt_sms_allowlist(default=default_allowed or default_contact)
+            save_allowlist_env("PINGRAM_VOICE_ALLOWED_USERS", delivery_choices)
+            welcome_to = delivery_choices[0]
+
+    if welcome_to:
+        save_env_value("PINGRAM_VOICE_DEFAULT_TO", welcome_to)
+    save_env_value("PINGRAM_VOICE_HOME_CHANNEL", "")
+    set_gateway_home_channel(PLATFORM_VOICE, None)
+
+    seed_display_overrides(load_config, save_config, PLATFORM_VOICE)
+    enable_gateway_platform(load_config, save_config, PLATFORM_VOICE)
+
+    print()
+    print_success("Pingram Voice configured!")
+    print_info(
+        "Voice is not a Hermes home channel. Hermes will only call when you explicitly "
+        "ask it to (send_message to pingram-voice:+1…)."
+    )
+    print_info(f"Calls use the Pingram app Voice Agent {agent_id}.")
+
+    if welcome_to and prompt_yes_no("Place a short test Voice Agent call now?", False):
+        print()
+        print_info("Calling you...")
+        if send_welcome_voice_call(api_key, region, welcome_to, agent_id=agent_id or None):
+            print(color("  📞 Placed — your phone should ring shortly.", Colors.BOLD, Colors.GREEN))
+        else:
+            print_warning(
+                "Couldn't place a test call just now — try send_message to pingram-voice once the gateway is running."
+            )
